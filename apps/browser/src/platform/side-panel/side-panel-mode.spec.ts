@@ -25,6 +25,7 @@ function chromeMock() {
       id: "test-extension",
       onMessage,
       onConnect,
+      connect: jest.fn(),
       getURL: (path: string) => "chrome-extension://test-extension/" + path.replace(/^\//, ""),
       getContexts: jest.fn(async () => [
         { contextType: "SIDE_PANEL", windowId: 7, tabId: -1, documentId: "panel-document" },
@@ -315,4 +316,97 @@ test("navigation remains queued until its own panel accepts it after editing", a
   );
   port.onMessage.emit({ type: "navigated", requestId: request!.id, accepted: true });
   expect(mode.hasRequest("navigation_deferred")).toBe(false);
+});
+
+test("a repeated unlock request in the same window receives a new focus revision", async () => {
+  await mode.setEnabled(true);
+  const options = { senderWindowId: 7, singleActionKey: "auth_unlockExtension" };
+  const first = await mode.open("popup/index.html#/lock", options);
+  const port = {
+    name: "customSidePanelView",
+    sender,
+    onMessage: mockEvent(),
+    onDisconnect: mockEvent(),
+    postMessage: jest.fn(),
+    disconnect: jest.fn(),
+  };
+  api.runtime.onConnect.emit(port);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(port.postMessage).toHaveBeenLastCalledWith(
+    expect.objectContaining({ type: "navigate", requestId: first!.id, revision: 0 }),
+  );
+  const again = await mode.open("popup/index.html#/lock", options);
+  expect(again!.id).toBe(first!.id);
+  expect(port.postMessage).toHaveBeenLastCalledWith(
+    expect.objectContaining({ type: "navigate", requestId: first!.id, revision: 1 }),
+  );
+});
+
+test("a panel refocuses only for a fresh explicit request, and cancels focus on completion", async () => {
+  const original = window.location.href;
+  window.history.replaceState(null, "", "/?uilocation=sidepanel#/lock");
+  const stop = jest.fn();
+  const helper = await import("./side-panel-unlock-focus");
+  const focus = jest.spyOn(helper, "focusSidePanelUnlock").mockReturnValue(stop);
+  const port = { onMessage: mockEvent(), postMessage: jest.fn(), disconnect: jest.fn() };
+  api.runtime.connect.mockReturnValue(port);
+  const navigate = jest.fn(async () => true);
+  const cleanup = mode.connectView(navigate);
+  const message = {
+    type: "navigate",
+    requestId: -1_000_001,
+    revision: 0,
+    url: "chrome-extension://test-extension/popup/index.html?uilocation=sidepanel&singleActionPopout=auth_unlockExtension#/lock",
+  };
+  try {
+    port.onMessage.emit(message);
+    await Promise.resolve();
+    expect(focus).toHaveBeenCalledTimes(1);
+    port.onMessage.emit(message);
+    await Promise.resolve();
+    expect(focus).toHaveBeenCalledTimes(1);
+    port.onMessage.emit({ ...message, revision: 1 });
+    await Promise.resolve();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(focus).toHaveBeenCalledTimes(2);
+    port.onMessage.emit({ type: "finished" });
+    expect(stop).toHaveBeenCalledTimes(2);
+  } finally {
+    cleanup();
+    focus.mockRestore();
+    window.history.replaceState(null, "", original);
+  }
+});
+
+test("a disposed panel never starts focusing after an in-flight navigation resolves", async () => {
+  const original = window.location.href;
+  window.history.replaceState(null, "", "/?uilocation=sidepanel#/lock");
+  const helper = await import("./side-panel-unlock-focus");
+  const focus = jest.spyOn(helper, "focusSidePanelUnlock").mockReturnValue(jest.fn());
+  const port = { onMessage: mockEvent(), postMessage: jest.fn(), disconnect: jest.fn() };
+  api.runtime.connect.mockReturnValue(port);
+  let finish!: (accepted: boolean) => void;
+  const cleanup = mode.connectView(
+    () =>
+      new Promise<boolean>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  try {
+    port.onMessage.emit({
+      type: "navigate",
+      requestId: -1_000_001,
+      revision: 0,
+      url: "chrome-extension://test-extension/popup/index.html?uilocation=sidepanel&singleActionPopout=auth_unlockExtension#/lock",
+    });
+    cleanup();
+    finish(true);
+    await Promise.resolve();
+    expect(focus).not.toHaveBeenCalled();
+    expect(port.postMessage).not.toHaveBeenCalled();
+  } finally {
+    focus.mockRestore();
+    window.history.replaceState(null, "", original);
+  }
 });

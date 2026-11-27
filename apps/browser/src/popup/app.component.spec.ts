@@ -30,6 +30,7 @@ import { BiometricsService, BiometricStateService, KeyService } from "@bitwarden
 
 import { PopupCompactModeService } from "../platform/popup/layout/popup-compact-mode.service";
 import { PopupSizeService } from "../platform/popup/layout/popup-size.service";
+import { SidePanelMode } from "../platform/side-panel/side-panel-mode";
 
 import { AppComponent } from "./app.component";
 
@@ -142,6 +143,30 @@ describe("AppComponent (browser popup)", () => {
 
     expect(premiumCheckoutPendingService.consumeCheckoutPending).toHaveBeenCalledWith(userId);
     expect(syncService.fullSync).toHaveBeenCalledWith(true);
+  });
+
+  it("accepts an explicit unlock request when the panel is already on the lock route", async () => {
+    const original = window.location.href;
+    let navigatePanel!: (url: string) => Promise<unknown>;
+    const connect = jest.spyOn(SidePanelMode, "connectView").mockImplementation((navigate) => {
+      navigatePanel = navigate;
+      return () => {};
+    });
+    Object.defineProperty(router, "url", { value: "/lock", configurable: true });
+    try {
+      await component.ngOnInit();
+      const accepted = await navigatePanel(
+        "chrome-extension://test/popup/index.html?uilocation=sidepanel&singleActionPopout=auth_unlockExtension#/lock",
+      );
+      expect(accepted).toBe(true);
+      expect(router.navigateByUrl).not.toHaveBeenCalled();
+      expect(new URL(window.location.href).searchParams.get("singleActionPopout")).toBe(
+        "auth_unlockExtension",
+      );
+    } finally {
+      connect.mockRestore();
+      window.history.replaceState(null, "", original);
+    }
   });
 
   it("does not sync when no premium checkout was pending", async () => {

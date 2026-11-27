@@ -151,9 +151,13 @@ export class AppComponent implements OnInit, OnDestroy {
       const current = new URL(window.location.href);
       current.search = target.search;
       window.history.replaceState(window.history.state, "", current.href);
-      return this.ngZone.run(() =>
-        this.router.navigateByUrl(target.hash.slice(1) || "/tabs/vault"),
-      );
+      const route = target.hash.slice(1) || "/tabs/vault";
+      // An already-open lock screen still accepts a new unlock/focus request.
+      // Angular otherwise reports same-URL navigation as false, like a rejected edit guard.
+      if (this.router.url === route) {
+        return true;
+      }
+      return this.ngZone.run(() => this.router.navigateByUrl(route));
     });
     initPopupClosedListener();
 

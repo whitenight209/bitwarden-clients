@@ -148,6 +148,15 @@ for (const enabled of [false, true]) {
         expect(await locked.evaluate(async () => (await chrome.windows.getAll()).length)).toBe(
           before,
         );
+        const unlockFocused = () =>
+          panel.evaluate<boolean>(
+            'document.hasFocus() && !!document.activeElement?.matches("[data-testid=lock-master-password-input], [data-testid=lock-pin-input], [data-testid=lock-biometric-unlock-button]")',
+          );
+        await expect.poll(unlockFocused).toBe(true);
+        // Reuse the already-mounted lock screen: no route/component recreation to autofocus it.
+        await website.locator('input[name="username"]').click();
+        await clickInlineUnlock(context, website);
+        await expect.poll(unlockFocused).toBe(true);
       } finally {
         await panel.dispose();
       }
@@ -155,6 +164,13 @@ for (const enabled of [false, true]) {
       await expect
         .poll(() => locked.evaluate(async () => (await chrome.windows.getAll()).length))
         .toBe(before + 1);
+      await expect
+        .poll(() =>
+          context
+            .pages()
+            .some((page) => page.url().includes("singleActionPopout=auth_unlockExtension")),
+        )
+        .toBe(true);
       const unlock = context
         .pages()
         .find((page) => page.url().includes("singleActionPopout=auth_unlockExtension"));
