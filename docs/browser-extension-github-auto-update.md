@@ -65,7 +65,9 @@ write는 새 파일과 해시·크기가 바뀐 파일, delete는 이전 목록�
 
 ## 최초 설치와 폴더 연결
 
-전체 ZIP을 고정 폴더에 풀고 Chrome에 등록한다. 설정의 커스텀 확장 업데이트에서 **실제 설치 폴더**를 선택하고 읽기·쓰기 권한을 허용한다. 선택기는 클릭 직후 실행한다.
+전체 ZIP을 고정 폴더에 풀고 Chrome에 등록한다. macOS에서는 `~/ChromeExtensions/Bitwarden`처럼 홈 아래의 일반 폴더를 사용한다. **`/Applications`, `~/Applications`와 그 하위 폴더는 사용할 수 없다.** Chrome이 해당 경로의 읽기·쓰기를 차단하므로 현재 File System Access 방식의 자체 업데이트가 불가능하다. [Chromium의 차단 경로](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/file_system_access/chrome_file_system_access_permission_context.cc)
+
+설정의 커스텀 확장 업데이트에서 **실제 설치 폴더**를 선택하고 읽기·쓰기 권한을 허용한다. 선택기는 클릭 직후 실행한다. 차단된 위치에 이미 설치했다면 [설치 폴더 이전 절차](browser-extension-custom-features-testing.md#이미-applications-아래에-설치한-경우)를 따른다. 현재 배포본은 다른 경로에 새로 로드할 때 확장 ID와 Chrome 저장소가 달라지므로 기존 설치를 삭제하거나 로그인·설정이 자동 이전된다고 가정하지 않는다.
 
 폴더 핸들은 별도 IndexedDB에 저장한다. Manifest·현재 버전·전체 파일 목록을 확인하고 연결 성공 시 수동 적용을 위한 폴더 접근을 준비한다. 실제 로드 폴더와 동일 내용의 복사본은 API로 구별할 수 없으므로 올바른 폴더를 선택해야 한다.
 
