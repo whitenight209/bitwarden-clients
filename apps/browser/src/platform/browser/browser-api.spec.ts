@@ -6,6 +6,7 @@ import { LogService } from "@bitwarden/logging";
 
 import { flushPromises } from "../../autofill/spec/testing-utils";
 import { BrowserPlatformUtilsService } from "../services/platform-utils/browser-platform-utils.service";
+import { SidePanelMode } from "../side-panel/side-panel-mode";
 
 import { BrowserApi } from "./browser-api";
 import { ExtensionInstallType } from "./extension-install-type";
@@ -454,6 +455,26 @@ describe("BrowserApi", () => {
       afterEach(() => {
         delete (chrome.runtime as any).getContexts;
       });
+
+      it.each([false, true])(
+        "treats a native panel as visible UI only when side panel mode is %s",
+        async (enabled) => {
+          const mode = jest.spyOn(SidePanelMode, "enabled", "get").mockReturnValue(enabled);
+          (chrome.runtime as any).getContexts.mockResolvedValue([
+            {
+              contextType: "SIDE_PANEL",
+              documentUrl: "chrome-extension://id/popup/index.html?uilocation=sidepanel",
+            },
+          ]);
+          try {
+            expect(await BrowserApi.isPopupOpen()).toBe(enabled);
+            expect(await BrowserApi.isAnyViewFocused()).toBe(false);
+            expect(await BrowserApi.isAnyPopupOrPopoutOpen()).toBe(false);
+          } finally {
+            mode.mockRestore();
+          }
+        },
+      );
 
       it("returns true when a POPUP context exists", async () => {
         (chrome.runtime as any).getContexts.mockResolvedValue([

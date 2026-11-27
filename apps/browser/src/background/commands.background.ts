@@ -184,6 +184,9 @@ export default class CommandsBackground {
   }
 
   private async openPopup() {
+    if (await SidePanelMode.open()) {
+      return;
+    }
     // Chrome APIs cannot open popup
     if (!this.isSafari) {
       return;

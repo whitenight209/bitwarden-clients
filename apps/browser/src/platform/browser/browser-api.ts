@@ -548,7 +548,8 @@ export class BrowserApi {
   }
 
   /**
-   * Returns true if the vault popup is currently open.
+   * Returns true if the vault popup or the enabled mode's side panel is open.
+   * This indicates UI presence for dialogs, not user activity for vault timeout.
    *
    * Uses `chrome.runtime.getContexts()` on MV3 (Chrome/Edge),
    * and falls back to `chrome.extension.getViews()` for MV2 (Firefox) and Safari.
@@ -559,7 +560,11 @@ export class BrowserApi {
       BrowserApi.isManifestVersion(3)
     ) {
       const contexts = await chrome.runtime.getContexts({});
-      return contexts.some((context) => context.contextType === "POPUP");
+      return contexts.some(
+        (context) =>
+          context.contextType === "POPUP" ||
+          (SidePanelMode.enabled && context.contextType === "SIDE_PANEL"),
+      );
     }
 
     // MV2/Safari — background page can use getExtensionViews

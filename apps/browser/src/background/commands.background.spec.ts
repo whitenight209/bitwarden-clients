@@ -141,6 +141,23 @@ describe("CommandsBackground", () => {
     }
   });
 
+  it.each([false, true])(
+    "routes the explicit open command through the panel adapter (ON=%s)",
+    async (enabled) => {
+      const open = jest
+        .spyOn(SidePanelMode, "open")
+        .mockResolvedValue(enabled ? ({ id: -1_000_001 } as chrome.windows.Window) : null);
+      try {
+        await commandsBackground["processCommand"](ExtensionCommand.OpenPopup);
+        expect(open).toHaveBeenCalled();
+        // The Chrome OFF path still belongs to the browser's native _execute_action shortcut.
+        expect(main.openPopup).not.toHaveBeenCalled();
+      } finally {
+        open.mockRestore();
+      }
+    },
+  );
+
   describe("unlockCompleted", () => {
     it("replays the retained command against the retained tab", async () => {
       intraprocessMessageSender.send(RETRY_WHEN_UNLOCK_COMPLETED, { data: retainedRetry() });
