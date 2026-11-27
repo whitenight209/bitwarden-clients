@@ -431,6 +431,8 @@ import {
   BrowserSystemNotificationService,
   isNotificationsSupported,
 } from "../platform/system-notifications/browser-system-notification.service";
+import { CustomUpdateAgent } from "../platform/updates/custom-update-agent";
+import { checkUpdatesOnUnlock } from "../platform/updates/update-unlock-trigger";
 import { fromChromeRuntimeMessaging } from "../platform/utils/from-chrome-runtime-messaging";
 import { ListViewsAnnouncerService } from "../vault/background/list-views-announcer.service";
 import { AtRiskCipherBadgeUpdaterService } from "../vault/services/at-risk-cipher-badge-updater.service";
@@ -1081,6 +1083,11 @@ export default class MainBackground {
     );
     // Started here rather than in bootstrap so an unlock the popup performs while the service
     // worker is starting up is not missed.
+    checkUpdatesOnUnlock(
+      this.unlockService.unlocked$,
+      () => CustomUpdateAgent.checkAfterUnlock(),
+      (error) => this.logService.error("Failed to check extension updates after unlock", error),
+    );
     this.unlockService.init();
     void browserBiometricsService.setUnlockService(this.unlockService);
 

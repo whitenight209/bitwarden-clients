@@ -19,16 +19,7 @@
             (current.connected ? "customUpdateReconnectFolder" : "customUpdateConnectFolder") | i18n
           }}
         </button>
-        <label class="tw-flex tw-items-center tw-gap-2">
-          <input
-            type="checkbox"
-            [checked]="current.automatic"
-            [disabled]="busy() || !current.connected"
-            (change)="setAutomatic($event)"
-            data-testid="automatic-updates"
-          />
-          {{ "customUpdateAutomatic" | i18n }}
-        </label>
+        <p>{{ "customUpdateManualHelp" | i18n }}</p>
         <button
           bitButton
           type="button"

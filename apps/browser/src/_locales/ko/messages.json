@@ -9485,8 +9485,11 @@
   "customUpdateReconnectFolder": {
     "message": "설치 폴더 다시 연결"
   },
-  "customUpdateAutomatic": {
-    "message": "편집·인증 중이 아닐 때 새 업데이트 자동 적용"
+  "customUpdateManualHelp": {
+    "message": "잠금 해제 시 마지막 확인에서 24시간이 지났으면 새 버전을 확인합니다. 업데이트 적용 버튼을 눌렀을 때만 설치합니다."
+  },
+  "customUpdateReview": {
+    "message": "업데이트 보기"
   },
   "customUpdateCheck": {
     "message": "업데이트 확인"

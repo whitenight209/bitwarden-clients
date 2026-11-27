@@ -22,6 +22,8 @@ The Bitwarden browser extension is written using the Web Extension API and Angul
 
 `main`에 확장 관련 변경을 푸시하면 [Custom Chrome Extension CI](https://github.com/whitenight209/bitwarden-clients/actions/workflows/publish-browser-custom.yml)가 자동으로 다음 버전을 빌드·게시합니다. Actions의 **Run workflow**로도 실행할 수 있으며 버전 입력을 비우면 자동으로 정합니다. 실행 결과의 **Artifacts**에서도 설치 ZIP을 받을 수 있습니다.
 
+새 버전은 실제 잠금 해제 완료 시 마지막 성공 확인에서 24시간이 지났으면 조회합니다. 팝업·패널을 여는 것만으로 조회하지 않으며, 새 버전 배너의 **업데이트 보기**를 눌러 설정에 진입한 뒤 **업데이트 적용**을 눌렀을 때만 설치합니다. 업데이트용 주기 타이머나 자동 설치 옵션은 없습니다.
+
 Please refer to the [Browser section](https://contributing.bitwarden.com/getting-started/clients/browser/) of the [Contributing Documentation](https://contributing.bitwarden.com/) for build instructions, recommended tooling, code style tips, and lots of other great information to get you started.
 
 커스텀 Chrome 빌드의 현재 배포 구조와 변경 파일 기반 업데이트 설계는 [GitHub Releases 자동 업데이트 설계](../../docs/browser-extension-github-auto-update.md)를 참고하세요.

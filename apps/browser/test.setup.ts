@@ -6,6 +6,10 @@ addCustomMatchers();
 // Add chrome storage api
 const QUOTA_BYTES = 10;
 const storage = {
+  onChanged: {
+    addListener: jest.fn(),
+    removeListener: jest.fn(),
+  },
   local: {
     set: jest.fn(),
     get: jest.fn(),

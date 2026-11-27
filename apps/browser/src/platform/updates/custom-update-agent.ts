@@ -25,13 +25,16 @@ import { getUpdateState, setUpdateState } from "./update-store";
 export const CUSTOM_UPDATE_STATUS = "customExtensionUpdateStatus";
 export const CUSTOM_UPDATE_PORT = "customExtensionUpdateView";
 const MESSAGE = "customExtensionUpdate";
-const ALARM = "customExtensionUpdateCheck";
+const LEGACY_ALARM = "customExtensionUpdateCheck";
+const CHECK_INTERVAL = 24 * 60 * 60 * 1000;
+const FAILED_CHECK_RETRY = 60 * 60 * 1000;
+
+export type UpdateCheckResult = { checkedAt: number; availableVersion?: string };
 
 export type CustomUpdateStatus = {
   recoveryAvailable?: boolean;
   configured: boolean;
   connected: boolean;
-  automatic: boolean;
   status:
     | "unconfigured"
     | "idle"
@@ -65,19 +68,18 @@ function internal(sender: chrome.runtime.MessageSender): boolean {
 
 export class CustomUpdateAgent {
   private static config?: UpdateConfig;
-  private static initialized = false;
+  private static startup?: Promise<void>;
   private static views: UpdateView[] = [];
   private static state: CustomUpdateStatus;
 
-  static async initializeBackground(): Promise<void> {
-    if (CustomUpdateAgent.initialized) {
-      return;
-    }
-    CustomUpdateAgent.initialized = true;
+  static initializeBackground(): Promise<void> {
+    return (CustomUpdateAgent.startup ??= CustomUpdateAgent.initialize());
+  }
+
+  private static async initialize(): Promise<void> {
     CustomUpdateAgent.state = {
       configured: false,
       connected: false,
-      automatic: false,
       status: "unconfigured",
       version: chrome.runtime.getManifest().version,
     };
@@ -101,13 +103,6 @@ export class CustomUpdateAgent {
             break;
           case "connect":
             await CustomUpdateAgent.connect();
-            break;
-          case "automatic":
-            if (typeof message.enabled !== "boolean") {
-              throw new Error("Invalid update preference.");
-            }
-            await setUpdateState("automatic", message.enabled);
-            CustomUpdateAgent.state.automatic = message.enabled;
             break;
           case "restore":
             await CustomUpdateAgent.withLock(async () => {
@@ -150,15 +145,9 @@ export class CustomUpdateAgent {
         view.ready.forEach((resolve) => resolve(false));
       });
     });
-    // eslint-disable-next-line no-restricted-syntax -- Registered once in the background worker only.
-    chrome.alarms.onAlarm.addListener((alarm) => {
-      if (alarm.name === ALARM) {
-        void CustomUpdateAgent.run(false, true).catch((error: unknown) =>
-          CustomUpdateAgent.publish({ status: "error", error: String(error) }),
-        );
-      }
-    });
     try {
+      // Remove the previous periodic updater without scheduling another background task.
+      await chrome.alarms.clear(LEGACY_ALARM);
       const response = await fetch(chrome.runtime.getURL(CONFIG_FILE));
       if (!response.ok) {
         await CustomUpdateAgent.publish();
@@ -171,11 +160,19 @@ export class CustomUpdateAgent {
       }
       CustomUpdateAgent.config = config;
       const root = await getUpdateState<UpdateDirectory>("directory");
+      const checked = await getUpdateState<UpdateCheckResult>("checkResult");
+      const availableVersion =
+        checked?.availableVersion &&
+        compareVersions(checked.availableVersion, CustomUpdateAgent.state.version) > 0
+          ? checked.availableVersion
+          : undefined;
+      await setUpdateState("automatic", null);
       await CustomUpdateAgent.publish({
         configured: true,
         connected: !!root,
-        automatic: (await getUpdateState<boolean>("automatic")) ?? false,
-        status: "idle",
+        checkedAt: checked?.checkedAt,
+        availableVersion,
+        status: availableVersion ? "available" : "idle",
         repository: config.repository,
       });
       const journal = await getUpdateState<UpdateJournal>("journal");
@@ -204,7 +201,6 @@ export class CustomUpdateAgent {
         chrome.runtime.reload();
         return;
       }
-      await chrome.alarms.create(ALARM, { delayInMinutes: 1, periodInMinutes: 360 });
     } catch (error) {
       await CustomUpdateAgent.publish({ status: "error", error: String(error) });
     }
@@ -252,10 +248,8 @@ export class CustomUpdateAgent {
       await verifyDirectory(root, baseline);
       await setUpdateState("directory", root);
       await setUpdateState("directoryCandidate", null);
-      await setUpdateState("automatic", true);
       await CustomUpdateAgent.publish({
         connected: true,
-        automatic: true,
         status: "idle",
         error: undefined,
       });
@@ -346,117 +340,148 @@ export class CustomUpdateAgent {
     return prepared;
   }
 
-  static async run(apply: boolean, automatic = false): Promise<void> {
+  /** Invoked only by a completed, non-restored unlock; never by opening a view. */
+  static async checkAfterUnlock(): Promise<void> {
+    await CustomUpdateAgent.initializeBackground();
+    if (!CustomUpdateAgent.config) {
+      return;
+    }
     await CustomUpdateAgent.withLock(async () => {
-      const config = CustomUpdateAgent.config;
-      if (!config) {
-        throw new Error("Updates are not configured for this build.");
-      }
       if (await getUpdateState("journal")) {
-        throw new Error("A pending update must finish or be restored first.");
-      }
-      await CustomUpdateAgent.publish({ status: "checking", error: undefined });
-      const current = chrome.runtime.getManifest().version;
-      const highest = (await getUpdateState<string>("highestVersion")) ?? current;
-      const update = await findRemoteUpdate(
-        config,
-        compareVersions(highest, current) > 0 ? highest : current,
-      );
-      if (!update) {
-        await CustomUpdateAgent.publish({
-          status: "current",
-          checkedAt: Date.now(),
-          availableVersion: undefined,
-        });
         return;
       }
-      await CustomUpdateAgent.publish({
-        status: "available",
-        availableVersion: update.release.version,
-        checkedAt: Date.now(),
-      });
-      if (!apply && !(automatic && CustomUpdateAgent.state.automatic)) {
+      const now = Date.now();
+      const checked = await getUpdateState<UpdateCheckResult>("checkResult");
+      const attempted = await getUpdateState<number>("lastCheckAttempt");
+      if (checked && now - checked.checkedAt < CHECK_INTERVAL) {
         return;
       }
-      const root = await getUpdateState<UpdateDirectory>("directory");
-      if (!root || (await root.queryPermission({ mode: "readwrite" })) !== "granted") {
-        await CustomUpdateAgent.publish({
-          status: "waiting",
-          error: "Reconnect the installation folder to allow this update.",
-        });
+      if (attempted != null && now - attempted < FAILED_CHECK_RETRY) {
         return;
       }
-      const chromeVersion = navigator.userAgent.match(
-        /(?:Chrome|Chromium)\/(\d+\.\d+\.\d+\.\d+)/,
-      )?.[1];
-      if (
-        !chromeVersion ||
-        compareVersions(chromeVersion, update.release.minimumChromeVersion) < 0
-      ) {
-        throw new Error("Update Chrome before installing this release.");
-      }
-      const baselineBytes = await readUpdateFile(root, INSTALLED_FILE);
-      const baseline = validateInventory(
-        JSON.parse(new TextDecoder().decode(baselineBytes)),
-        config,
-      );
-      if (baseline.version !== current) {
-        throw new Error("The selected installation does not match the running extension.");
-      }
-      const inventoryBytes = await fetchUpdateAsset(config, update, update.release.inventory);
-      const inventory = validateInventory(
-        JSON.parse(new TextDecoder().decode(inventoryBytes)),
-        config,
-      );
-      if (
-        inventory.version !== update.release.version ||
-        inventory.commit !== update.release.commit
-      ) {
-        throw new Error("The inventory has the wrong version or commit.");
-      }
-      // Resolve the baseline digest once; a version string alone is never a patch identifier.
-      async function selectPayload(): Promise<Uint8Array> {
-        const baseHash = await sha256(baselineBytes);
-        const matching = update!.release.deltas.find(
-          (item) => item.fromVersion === current && item.fromInventorySha256 === baseHash,
-        );
-        if (!matching) {
-          return fetchUpdateAsset(config!, update!, update!.release.full);
-        }
-        const planBytes = await fetchUpdateAsset(config!, update!, matching.plan);
-        const plan = JSON.parse(new TextDecoder().decode(planBytes)) as UpdatePlan;
-        const changes = fileChanges(baseline, inventory);
-        if (
-          plan.schemaVersion !== 1 ||
-          plan.fromVersion !== current ||
-          plan.toVersion !== inventory.version ||
-          plan.fromInventorySha256 !== baseHash ||
-          plan.toInventorySha256 !== update!.release.inventory.sha256 ||
-          JSON.stringify(plan.write) !== JSON.stringify(changes.write) ||
-          JSON.stringify(plan.delete) !== JSON.stringify(changes.delete)
-        ) {
-          throw new Error("The delta plan does not match the inventories.");
-        }
-        return fetchUpdateAsset(config!, update!, matching.payload);
-      }
-      const payload = await unpackUpdate(await selectPayload());
-      if (!(await CustomUpdateAgent.prepareViews())) {
-        await CustomUpdateAgent.publish({
-          status: "waiting",
-          error: "Finish editing or authentication before applying this update.",
-        });
-        return;
-      }
-      await CustomUpdateAgent.publish({ status: "applying" });
       try {
-        await applyUpdateFiles(root, baselineBytes, inventoryBytes, payload, (value) =>
-          setUpdateState("journal", value),
-        );
-        chrome.runtime.reload();
-      } finally {
-        CustomUpdateAgent.releaseViews();
+        await CustomUpdateAgent.performCheck(false);
+      } catch (error) {
+        await CustomUpdateAgent.publish({ status: "error", error: String(error) });
+        throw error;
       }
     });
+  }
+
+  static async run(apply: boolean): Promise<void> {
+    await CustomUpdateAgent.initializeBackground();
+    await CustomUpdateAgent.withLock(() => CustomUpdateAgent.performCheck(apply));
+  }
+
+  private static async performCheck(apply: boolean): Promise<void> {
+    const config = CustomUpdateAgent.config;
+    if (!config) {
+      throw new Error("Updates are not configured for this build.");
+    }
+    if (await getUpdateState("journal")) {
+      throw new Error("A pending update must finish or be restored first.");
+    }
+    await CustomUpdateAgent.publish({ status: "checking", error: undefined });
+    const current = chrome.runtime.getManifest().version;
+    const highest = (await getUpdateState<string>("highestVersion")) ?? current;
+    await setUpdateState("lastCheckAttempt", Date.now());
+    const update = await findRemoteUpdate(
+      config,
+      compareVersions(highest, current) > 0 ? highest : current,
+    );
+    const result: UpdateCheckResult = {
+      checkedAt: Date.now(),
+      availableVersion: update?.release.version,
+    };
+    await setUpdateState("checkResult", result);
+    if (!update) {
+      await CustomUpdateAgent.publish({
+        status: "current",
+        checkedAt: result.checkedAt,
+        availableVersion: undefined,
+      });
+      return;
+    }
+    await CustomUpdateAgent.publish({
+      status: "available",
+      availableVersion: update.release.version,
+      checkedAt: result.checkedAt,
+    });
+    if (!apply) {
+      return;
+    }
+    const root = await getUpdateState<UpdateDirectory>("directory");
+    if (!root || (await root.queryPermission({ mode: "readwrite" })) !== "granted") {
+      await CustomUpdateAgent.publish({
+        status: "waiting",
+        error: "Reconnect the installation folder to allow this update.",
+      });
+      return;
+    }
+    const chromeVersion = navigator.userAgent.match(
+      /(?:Chrome|Chromium)\/(\d+\.\d+\.\d+\.\d+)/,
+    )?.[1];
+    if (!chromeVersion || compareVersions(chromeVersion, update.release.minimumChromeVersion) < 0) {
+      throw new Error("Update Chrome before installing this release.");
+    }
+    const baselineBytes = await readUpdateFile(root, INSTALLED_FILE);
+    const baseline = validateInventory(JSON.parse(new TextDecoder().decode(baselineBytes)), config);
+    if (baseline.version !== current) {
+      throw new Error("The selected installation does not match the running extension.");
+    }
+    const inventoryBytes = await fetchUpdateAsset(config, update, update.release.inventory);
+    const inventory = validateInventory(
+      JSON.parse(new TextDecoder().decode(inventoryBytes)),
+      config,
+    );
+    if (
+      inventory.version !== update.release.version ||
+      inventory.commit !== update.release.commit
+    ) {
+      throw new Error("The inventory has the wrong version or commit.");
+    }
+    // Resolve the baseline digest once; a version string alone is never a patch identifier.
+    async function selectPayload(): Promise<Uint8Array> {
+      const baseHash = await sha256(baselineBytes);
+      const matching = update!.release.deltas.find(
+        (item) => item.fromVersion === current && item.fromInventorySha256 === baseHash,
+      );
+      if (!matching) {
+        return fetchUpdateAsset(config!, update!, update!.release.full);
+      }
+      const planBytes = await fetchUpdateAsset(config!, update!, matching.plan);
+      const plan = JSON.parse(new TextDecoder().decode(planBytes)) as UpdatePlan;
+      const changes = fileChanges(baseline, inventory);
+      if (
+        plan.schemaVersion !== 1 ||
+        plan.fromVersion !== current ||
+        plan.toVersion !== inventory.version ||
+        plan.fromInventorySha256 !== baseHash ||
+        plan.toInventorySha256 !== update!.release.inventory.sha256 ||
+        JSON.stringify(plan.write) !== JSON.stringify(changes.write) ||
+        JSON.stringify(plan.delete) !== JSON.stringify(changes.delete)
+      ) {
+        throw new Error("The delta plan does not match the inventories.");
+      }
+      return fetchUpdateAsset(config!, update!, matching.payload);
+    }
+    const payload = await unpackUpdate(await selectPayload());
+    if (!(await CustomUpdateAgent.prepareViews())) {
+      await CustomUpdateAgent.publish({
+        status: "waiting",
+        error: "Finish editing or authentication before applying this update.",
+      });
+      return;
+    }
+    await CustomUpdateAgent.publish({ status: "applying" });
+    try {
+      await applyUpdateFiles(root, baselineBytes, inventoryBytes, payload, (value) =>
+        setUpdateState("journal", value),
+      );
+      chrome.runtime.reload();
+    } finally {
+      CustomUpdateAgent.releaseViews();
+    }
   }
 }
 

@@ -75,7 +75,7 @@
     "test:clearCache": "jest --clear-cache",
     "update:dev:chrome": "./scripts/update-manifest-dev.sh",
     "update:beta": "./scripts/update-manifest-beta.sh",
-    "test:custom-updates": "node --experimental-strip-types --test scripts/custom-update-package.test.mjs && jest --runInBand src/platform/updates src/platform/side-panel",
+    "test:custom-updates": "node --experimental-strip-types --test scripts/custom-update-package.test.mjs && jest --runInBand src/platform/updates src/platform/side-panel src/platform/popup/components/custom-update-banner.component.spec.ts",
     "package:custom-update": "node --experimental-strip-types scripts/package-custom-update.mjs",
     "verify:custom-update": "node --experimental-strip-types scripts/verify-custom-update.mjs"
   }

@@ -9529,8 +9529,11 @@
   "customUpdateReconnectFolder": {
     "message": "Reconnect installation folder"
   },
-  "customUpdateAutomatic": {
-    "message": "Automatically apply new updates when no editing or authentication is in progress"
+  "customUpdateManualHelp": {
+    "message": "When you unlock, new versions are checked if 24 hours have passed since the last successful check. Updates are installed only when you click Apply update."
+  },
+  "customUpdateReview": {
+    "message": "View update"
   },
   "customUpdateCheck": {
     "message": "Check for updates"

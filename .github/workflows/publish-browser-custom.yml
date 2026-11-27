@@ -109,7 +109,7 @@ jobs:
           1. Extract the artifact, then extract **extension-chrome-custom-$RELEASE_VERSION.zip** to a permanent folder.
           2. Open **chrome://extensions** and enable **Developer mode**.
           3. Click **Load unpacked** and select the folder containing **manifest.json**.
-          4. Settings → Appearance: enable **Side panel mode** as needed. Open **Custom extension updates** and connect that same installation folder for automatic updates.
+          4. Settings → Appearance: enable **Side panel mode** as needed. Open **Custom extension updates** and connect that same installation folder. Version checks run after unlocking when 24 hours have elapsed; installation requires clicking **Apply update**.
           EOF
 
   publish:
@@ -136,7 +136,7 @@ jobs:
           Download extension-chrome-custom-$RELEASE_VERSION.zip and extract it to a permanent folder.
           Open chrome://extensions, enable Developer mode, click Load unpacked, and select the folder containing manifest.json.
           Enable Side panel mode in Settings → Appearance as needed.
-          Connect the same installation folder under Custom extension updates to enable automatic version-based updates.
+          Connect the same installation folder under Custom extension updates. New versions are checked after unlocking when 24 hours have elapsed. Click Apply update to install; updates are never applied automatically.
           EOF
           if gh release view "$release_tag" --json isDraft,targetCommitish > release-state.json 2> release-error.txt; then
             jq -e --arg commit "$GITHUB_SHA" '.isDraft and .targetCommitish == $commit' release-state.json > /dev/null

@@ -34,6 +34,7 @@ import { CurrentAccountComponent } from "../auth/popup/account-switching/current
 import { AccountSecurityComponent } from "../auth/popup/settings/account-security.component";
 import { AutofillComponent } from "../autofill/popup/settings/autofill.component";
 import { NotificationsSettingsComponent } from "../autofill/popup/settings/notifications.component";
+import { CustomUpdateBannerComponent } from "../platform/popup/components/custom-update-banner.component";
 import { PopOutComponent } from "../platform/popup/components/pop-out.component";
 import { PopupFocusWrapDirective } from "../platform/popup/components/popup-focus-wrap.directive";
 import { PopupFooterComponent } from "../platform/popup/layout/popup-footer.component";
@@ -80,6 +81,7 @@ import "../platform/popup/locales";
     ButtonModule,
     NotificationsSettingsComponent,
     PopOutComponent,
+    CustomUpdateBannerComponent,
     PopupFocusWrapDirective,
     PopupPageComponent,
     PopupTabNavigationComponent,

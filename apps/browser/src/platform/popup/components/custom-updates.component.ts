@@ -84,8 +84,4 @@ export class CustomUpdatesComponent implements OnInit, OnDestroy {
       }
     }
   }
-
-  protected setAutomatic(event: Event): void {
-    void this.operation("automatic", { enabled: (event.target as HTMLInputElement).checked });
-  }
 }
