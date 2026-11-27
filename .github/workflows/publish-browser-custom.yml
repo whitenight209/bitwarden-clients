@@ -1,4 +1,4 @@
-name: Custom Chrome Extension
+name: Chrome Extension Release
 
 on:
   push:
@@ -112,6 +112,9 @@ jobs:
           2. Open **chrome://extensions** and enable **Developer mode**.
           3. Click **Load unpacked** and select the folder containing **manifest.json**.
           4. Settings → Appearance: enable **Side panel mode** as needed. Open **Custom extension updates** and connect that same installation folder. Version checks run after unlocking when 24 hours have elapsed; installation requires clicking **Apply update**.
+
+          Existing installations: keep the same extension and installation folder. Use **Apply update** inside the extension. If its updater is blocked, follow the [same-folder recovery instructions](https://github.com/$GITHUB_REPOSITORY/blob/main/docs/browser-extension-github-auto-update.md); do not remove and reinstall the extension.
+          On macOS use an ordinary home subfolder such as **~/ChromeExtensions/Bitwarden**. File System Access blocks **/Applications**, **~/Applications**, and their subfolders.
           EOF
 
   publish:
@@ -135,10 +138,14 @@ jobs:
           cat > release-notes.txt <<EOF
           Custom Chrome extension $RELEASE_VERSION
 
-          Download extension-chrome-custom-$RELEASE_VERSION.zip and extract it to a permanent folder.
-          Open chrome://extensions, enable Developer mode, click Load unpacked, and select the folder containing manifest.json.
+          First installation: download extension-chrome-custom-$RELEASE_VERSION.zip and extract it to a permanent folder. Open chrome://extensions, enable Developer mode, click Load unpacked, and select the folder containing manifest.json.
+          On macOS use an ordinary home subfolder such as ~/ChromeExtensions/Bitwarden; /Applications and ~/Applications are blocked for internal file updates.
           Enable Side panel mode in Settings → Appearance as needed.
-          Connect the same installation folder under Custom extension updates. New versions are checked after unlocking when 24 hours have elapsed. Click Apply update to install; updates are never applied automatically.
+          Connect the same installation folder under Custom extension updates. New versions are checked after unlocking when 24 hours have elapsed. Click Apply update to install; updates are applied only by clicking this button.
+
+          Existing installations: keep the same extension and installation folder to preserve its ID and account storage. If the existing updater is blocked, follow the same-folder recovery instructions instead of removing and reinstalling the extension.
+          Update and recovery guide: https://github.com/$GITHUB_REPOSITORY/blob/main/docs/browser-extension-github-auto-update.md
+          Test scenarios: https://github.com/$GITHUB_REPOSITORY/blob/main/docs/browser-extension-custom-features-testing.md
           EOF
           if gh release view "$release_tag" --json isDraft,targetCommitish > release-state.json 2> release-error.txt; then
             jq -e --arg commit "$GITHUB_SHA" '.isDraft and .targetCommitish == $commit' release-state.json > /dev/null

@@ -8,14 +8,14 @@
 
 ## AS-IS: 변경 전 구조
 
-| 구성                                                        | 변경 전 동작                          | 자동 업데이트에 필요한 변경       |
-| ----------------------------------------------------------- | ------------------------------------- | --------------------------------- |
-| [build-browser.yml](../.github/workflows/build-browser.yml) | 빌드 ZIP을 Actions 아티팩트로 업로드  | GitHub Release 게시               |
-| [package.json](../apps/browser/package.json)                | 전체 빌드·압축                        | 최종 버전 입력, 파일 비교·패키징  |
-| [webpack.base.js](../apps/browser/webpack.base.js)          | apps/browser/build에 런타임 파일 생성 | 전체 파일 목록과 차이 계산        |
-| [compress.sh](../apps/browser/scripts/compress.sh)          | 전체 ZIP 생성                         | 변경 파일 ZIP과 삭제 계획         |
-| [manifest.v3.json](../apps/browser/src/manifest.v3.json)    | 소스 버전을 빌드에 사용               | 릴리스의 증가한 숫자 버전 반영    |
-| 확장 백그라운드                                             | GitHub 조회·폴더 변경 없음            | 주기적 확인·파일 적용·재로드·복구 |
+| 구성                                                     | 변경 전 동작                          | 자동 업데이트에 필요한 변경       |
+| -------------------------------------------------------- | ------------------------------------- | --------------------------------- |
+| 기존 build-browser.yml (제거됨)                          | 빌드 ZIP을 Actions 아티팩트로 업로드  | GitHub Release 게시               |
+| [package.json](../apps/browser/package.json)             | 전체 빌드·압축                        | 최종 버전 입력, 파일 비교·패키징  |
+| [webpack.base.js](../apps/browser/webpack.base.js)       | apps/browser/build에 런타임 파일 생성 | 전체 파일 목록과 차이 계산        |
+| [compress.sh](../apps/browser/scripts/compress.sh)       | 전체 ZIP 생성                         | 변경 파일 ZIP과 삭제 계획         |
+| [manifest.v3.json](../apps/browser/src/manifest.v3.json) | 소스 버전을 빌드에 사용               | 릴리스의 증가한 숫자 버전 반영    |
+| 확장 백그라운드                                          | GitHub 조회·폴더 변경 없음            | 주기적 확인·파일 적용·재로드·복구 |
 
 기존 requestUpdateCheck()는 Chrome이 관리하는 배포 경로용이다. GitHub ZIP을 압축해제 설치 폴더에 반영하려면 별도 파일 접근과 재로드가 필요하다. 소스 Git diff 대신 최종 JS·CSS·WASM·폰트·이미지·번역 파일의 바이트를 비교한다.
 
@@ -57,7 +57,9 @@ write는 새 파일과 해시·크기가 바뀐 파일, delete는 이전 목록�
 
 ## CI/CD 설정
 
-[커스텀 워크플로](../.github/workflows/publish-browser-custom.yml)는 main의 확장 관련 변경 push, browser-custom-v* 태그 push 또는 수동 실행으로 시작한다. main push와 버전 입력을 비운 수동 실행에서는 소스 버전과 이미 사용한 릴리스 버전보다 높은 숫자 버전을 자동 선택한다. 기존 일반 빌드는 유지한다.
+[Chrome Extension Release](../.github/workflows/publish-browser-custom.yml)는 이 저장소의 유일한 GitHub Actions 워크플로다. 기존 브라우저·웹·데스크톱·CLI 빌드와 테스트·번역·봇 워크플로는 제거했다. 브라우저 전체 단위 테스트와 업데이트 패키징 테스트는 이 릴리스 CI 안에서 실행한다.
+
+main의 확장 관련 변경 push, browser-custom-v* 태그 push 또는 수동 실행으로 시작한다. main push와 버전 입력을 비운 수동 실행에서는 소스 버전과 이미 사용한 릴리스 버전보다 높은 숫자 버전을 자동 선택한다.
 
 **업데이트용 Secret이나 키 등록은 필요 없다.** 기본 github.token으로 릴리스 읽기·게시를 수행한다. 빌드 job은 읽기, 게시 job은 contents: write를 사용한다. 같은 채널의 워크플로는 직렬화하며 같거나 높은 공개 버전이 있으면 배포를 거부한다.
 

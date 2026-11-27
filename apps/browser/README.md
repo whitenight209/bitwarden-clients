@@ -1,4 +1,4 @@
-[![Github Workflow build browser on main](https://github.com/bitwarden/clients/actions/workflows/build-browser.yml/badge.svg?branch=main)](https://github.com/bitwarden/clients/actions/workflows/build-browser.yml?query=branch:main)
+[![Chrome Extension Release](https://github.com/whitenight209/bitwarden-clients/actions/workflows/publish-browser-custom.yml/badge.svg?branch=main)](https://github.com/whitenight209/bitwarden-clients/actions/workflows/publish-browser-custom.yml)
 [![Crowdin](https://d322cqt584bo4o.cloudfront.net/bitwarden-browser/localized.svg)](https://crowdin.com/project/bitwarden-browser)
 
 # Bitwarden Browser Extension
@@ -20,7 +20,7 @@ The Bitwarden browser extension is written using the Web Extension API and Angul
 
 커스텀 Chrome 확장 설치 파일은 [최신 GitHub Release](https://github.com/whitenight209/bitwarden-clients/releases/latest)에서 `extension-chrome-custom-VERSION.zip`을 내려받으세요. 압축을 풀고 `chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램을 로드합니다**에서 `manifest.json`이 있는 폴더를 선택하면 됩니다.
 
-`main`에 확장 관련 변경을 푸시하면 [Custom Chrome Extension CI](https://github.com/whitenight209/bitwarden-clients/actions/workflows/publish-browser-custom.yml)가 자동으로 다음 버전을 빌드·게시합니다. Actions의 **Run workflow**로도 실행할 수 있으며 버전 입력을 비우면 자동으로 정합니다. 실행 결과의 **Artifacts**에서도 설치 ZIP을 받을 수 있습니다.
+`main`에 확장 관련 변경을 푸시하면 [Chrome Extension Release CI](https://github.com/whitenight209/bitwarden-clients/actions/workflows/publish-browser-custom.yml)가 자동으로 다음 버전을 빌드·게시합니다. Actions의 **Run workflow**로도 실행할 수 있으며 버전 입력을 비우면 자동으로 정합니다. 실행 결과의 **Artifacts**에서도 설치 ZIP을 받을 수 있습니다.
 
 새 버전은 실제 잠금 해제 완료 시 마지막 성공 확인에서 24시간이 지났으면 조회합니다. 팝업·패널을 여는 것만으로 조회하지 않으며, 새 버전 배너의 **업데이트 보기**를 눌러 설정에 진입한 뒤 **업데이트 적용**을 눌렀을 때만 설치합니다. 업데이트용 주기 타이머나 자동 설치 옵션은 없습니다.
 
