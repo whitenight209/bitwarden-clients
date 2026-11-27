@@ -5,6 +5,7 @@ import { LogService } from "@bitwarden/logging";
 
 import { SafariApp } from "../../browser/safariApp";
 import { BrowserApi } from "../browser/browser-api";
+import { SidePanelMode } from "../side-panel/side-panel-mode";
 
 export class BrowserActionsService implements ActionsService {
   constructor(
@@ -13,6 +14,9 @@ export class BrowserActionsService implements ActionsService {
   ) {}
 
   async openPopup(): Promise<void> {
+    if (await SidePanelMode.open()) {
+      return;
+    }
     const deviceType = this.platformUtilsService.getDevice();
 
     try {

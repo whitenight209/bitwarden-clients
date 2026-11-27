@@ -54,7 +54,7 @@ export function filePickerPopoutGuard(): CanActivateFn {
 
     // Check current context
     const inPopout = BrowserPopupUtils.inPopout(window);
-    const inSidebar = BrowserPopupUtils.inSidebar(window);
+    const inSidebar = BrowserPopupUtils.inSidebar(window) || BrowserPopupUtils.inSidePanel(window);
 
     let needsPopout = false;
 

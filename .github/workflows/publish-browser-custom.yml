@@ -1,0 +1,148 @@
+name: Custom Chrome Extension
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'browser-custom-v*'
+    paths:
+      - 'apps/browser/**'
+      - 'libs/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.nvmrc'
+      - 'tsconfig*.json'
+      - '.github/workflows/publish-browser-custom.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional numeric version; leave empty to choose the next version automatically'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-chrome-stable-${{ github.repository }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+      - name: Resolve release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .debug
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > .debug/custom-previous-releases.json
+          node --experimental-strip-types --input-type=module <<'JS'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { nextReleaseVersion, versionParts } from './apps/browser/src/platform/updates/update-contract.ts';
+          const prefix = 'browser-custom-v';
+          const published = JSON.parse(readFileSync('.debug/custom-previous-releases.json', 'utf8')).flat()
+            .filter(entry => entry.tag_name?.startsWith(prefix))
+            .map(entry => entry.tag_name.slice(prefix.length));
+          const manifest = JSON.parse(readFileSync('apps/browser/src/manifest.v3.json', 'utf8'));
+          const version = process.env.INPUT_VERSION || (process.env.GITHUB_REF_TYPE === 'tag'
+            ? process.env.GITHUB_REF_NAME.slice(prefix.length)
+            : nextReleaseVersion(manifest.version, published));
+          versionParts(version);
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Building Chrome extension **${version}**.\n`);
+          JS
+      - run: npm ci
+      - name: Test update contract and packaging
+        run: npm run test:custom-updates --workspace @bitwarden/browser
+      - name: Download and verify previous custom release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: node --experimental-strip-types apps/browser/scripts/verify-custom-update.mjs prepare --version "$RELEASE_VERSION" --out .debug/custom-baseline
+      - name: Build Chrome extension
+        run: npm run build:prod:chrome --workspace @bitwarden/browser
+      - name: Package full and incremental updates
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          base_args=()
+          if [[ -f .debug/custom-baseline/build/custom-update-installed.json ]]; then
+            base_args=(--base .debug/custom-baseline/build)
+          fi
+          node --experimental-strip-types apps/browser/scripts/package-custom-update.mjs package \
+            --build apps/browser/build --out .debug/custom-release --version "$RELEASE_VERSION" "${base_args[@]}"
+          node --experimental-strip-types apps/browser/scripts/verify-custom-update.mjs verify \
+            --release .debug/custom-release --config apps/browser/build/custom-update-config.json "${base_args[@]}"
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chrome-extension-${{ steps.version.outputs.version }}
+          path: .debug/custom-release/*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Add download and installation instructions
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Install the extension
+          Download **chrome-extension-$RELEASE_VERSION** from this run's Artifacts, or open the [GitHub Release](https://github.com/$GITHUB_REPOSITORY/releases/tag/browser-custom-v$RELEASE_VERSION).
+          1. Extract the artifact, then extract **extension-chrome-custom-$RELEASE_VERSION.zip** to a permanent folder.
+          2. Open **chrome://extensions** and enable **Developer mode**.
+          3. Click **Load unpacked** and select the folder containing **manifest.json**.
+          4. Settings → Appearance: enable **Side panel mode** as needed. Open **Custom extension updates** and connect that same installation folder for automatic updates.
+          EOF
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: chrome-extension-${{ needs.build.outputs.version }}
+          path: release-assets
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          release_tag="browser-custom-v$RELEASE_VERSION"
+          cat > release-notes.txt <<EOF
+          Custom Chrome extension $RELEASE_VERSION
+
+          Download extension-chrome-custom-$RELEASE_VERSION.zip and extract it to a permanent folder.
+          Open chrome://extensions, enable Developer mode, click Load unpacked, and select the folder containing manifest.json.
+          Enable Side panel mode in Settings → Appearance as needed.
+          Connect the same installation folder under Custom extension updates to enable automatic version-based updates.
+          EOF
+          if gh release view "$release_tag" --json isDraft,targetCommitish > release-state.json 2> release-error.txt; then
+            jq -e --arg commit "$GITHUB_SHA" '.isDraft and .targetCommitish == $commit' release-state.json > /dev/null
+          else
+            gh release create "$release_tag" --target "$GITHUB_SHA" --draft --title "Custom Chrome $RELEASE_VERSION" --notes-file release-notes.txt
+          fi
+          gh release upload "$release_tag" release-assets/* --clobber
+          gh release edit "$release_tag" --draft=false
+          printf '[Download Chrome extension %s](https://github.com/%s/releases/tag/%s)\n' "$RELEASE_VERSION" "$GITHUB_REPOSITORY" "$release_tag" >> "$GITHUB_STEP_SUMMARY"

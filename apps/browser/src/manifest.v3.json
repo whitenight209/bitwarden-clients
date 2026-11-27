@@ -110,7 +110,7 @@
   },
   "__firefox__sandbox": null,
   "__chrome__side_panel": {
-    "default_path": "sidepanel-disabled.html"
+    "default_path": "popup/index.html?uilocation=sidepanel"
   },
   "commands": {
     "_execute_action": {

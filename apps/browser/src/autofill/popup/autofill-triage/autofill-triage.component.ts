@@ -26,6 +26,7 @@ import {
 
 import { BrowserApi } from "../../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../../platform/browser/browser-popup-utils";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
 import { AutofillTriagePageResult, AutofillTriageFieldResult } from "../../types/autofill-triage";
 import { formatAutofillTriageReport, getFieldLabel } from "../utils/format-autofill-triage-report";
 
@@ -101,12 +102,15 @@ export class AutofillTriageComponent implements OnInit, OnDestroy {
   ) {}
 
   async ngOnInit() {
+    const requestedTab = new URLSearchParams(window.location.hash.split("?")[1]).get("senderTabId");
     // In a side panel context, chrome.tabs.getCurrent() returns null.
     // We need to get the active tab from the current window instead.
     let tab = await BrowserApi.getCurrentTab();
-    if (!tab && BrowserPopupUtils.inSidePanel(window)) {
-      const tabs = await BrowserApi.tabsQuery({ active: true, currentWindow: true });
-      tab = tabs[0];
+    if (BrowserPopupUtils.inSidePanel(window)) {
+      tab =
+        requestedTab && /^\d+$/.test(requestedTab)
+          ? await BrowserApi.getTab(Number(requestedTab))
+          : await BrowserApi.getTabFromCurrentWindow();
     }
     this.currentTabId.set(tab?.id);
 
@@ -120,7 +124,7 @@ export class AutofillTriageComponent implements OnInit, OnDestroy {
   ngOnDestroy() {
     BrowserApi.removeListener(chrome.runtime.onMessage, this.messageListener);
 
-    if (BrowserPopupUtils.inSidePanel(window)) {
+    if (BrowserPopupUtils.inSidePanel(window) && !SidePanelMode.enabled) {
       void BrowserApi.setSidePanelOptions({ enabled: false, tabId: this.currentTabId() });
     }
   }

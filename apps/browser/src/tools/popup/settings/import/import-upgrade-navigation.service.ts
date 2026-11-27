@@ -1,6 +1,7 @@
 import { Injectable } from "@angular/core";
 
 import { BrowserApi } from "../../../../platform/browser/browser-api";
+import { SidePanelMode } from "../../../../platform/side-panel/side-panel-mode";
 
 /**
  * Opens the new import picker in its own extension tab immediately, no confirmation — the picker
@@ -10,6 +11,9 @@ import { BrowserApi } from "../../../../platform/browser/browser-api";
 @Injectable({ providedIn: "root" })
 export class ImportUpgradeNavigationService {
   async openImportSourceSelectTab(): Promise<void> {
+    if (await SidePanelMode.open("popup/index.html#/import-source-select")) {
+      return;
+    }
     // `?uilocation=tab` is required, not cosmetic: `BrowserPopupUtils.inPopup()` treats any URL
     // with no `uilocation` param as a real popup, and `PopupRouterCacheService` only records/skips
     // route history for URLs `inPopup()` considers a popup — without this marker, opening this tab

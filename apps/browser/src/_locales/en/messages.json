@@ -8364,7 +8364,7 @@
       }
     }
   },
-   "openTransferItemsHelpArticle": {
+  "openTransferItemsHelpArticle": {
     "message": "Open help article on transferring items"
   },
   "acceptTransfer": {
@@ -9486,5 +9486,62 @@
   },
   "month": {
     "message": "month"
+  },
+  "sidePanelMode": {
+    "message": "Side panel mode"
+  },
+  "sidePanelModeDescription": {
+    "message": "Open all Bitwarden screens in the side panel."
+  },
+  "customExtensionUpdates": {
+    "message": "Custom extension updates"
+  },
+  "customUpdateUnconfigured": {
+    "message": "Updates are not configured for this build. Install a custom release to enable them."
+  },
+  "customUpdateIdle": {
+    "message": "Ready to check for updates."
+  },
+  "customUpdateChecking": {
+    "message": "Checking for updates…"
+  },
+  "customUpdateAvailable": {
+    "message": "An update is available."
+  },
+  "customUpdateApplying": {
+    "message": "Applying the update…"
+  },
+  "customUpdateWaiting": {
+    "message": "Waiting to apply the update."
+  },
+  "customUpdateError": {
+    "message": "The update could not be completed."
+  },
+  "customUpdateCurrent": {
+    "message": "You are up to date."
+  },
+  "customUpdateFolderHelp": {
+    "message": "Select the same folder you loaded in Chrome. Updates change application files; your vault and settings are kept."
+  },
+  "customUpdateConnectFolder": {
+    "message": "Connect installation folder"
+  },
+  "customUpdateReconnectFolder": {
+    "message": "Reconnect installation folder"
+  },
+  "customUpdateAutomatic": {
+    "message": "Automatically apply new updates when no editing or authentication is in progress"
+  },
+  "customUpdateCheck": {
+    "message": "Check for updates"
+  },
+  "customUpdateNewVersion": {
+    "message": "Available version"
+  },
+  "customUpdateApply": {
+    "message": "Apply update"
+  },
+  "customUpdateRestore": {
+    "message": "Restore previous application files"
   }
 }

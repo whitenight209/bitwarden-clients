@@ -9,6 +9,25 @@
 
   <form [formGroup]="appearanceForm">
     <bit-card>
+      @if (sidePanelSupported) {
+        <bit-form-control>
+          <input
+            bitCheckbox
+            formControlName="sidePanelMode"
+            type="checkbox"
+            data-testid="side-panel-mode"
+            [attr.aria-busy]="sidePanelSaving"
+          />
+          <bit-label>{{ "sidePanelMode" | i18n }}</bit-label>
+          <bit-hint>{{ "sidePanelModeDescription" | i18n }}</bit-hint>
+        </bit-form-control>
+        @if (sidePanelError) {
+          <p role="alert">{{ sidePanelError }}</p>
+        }
+      }
+      <a routerLink="/custom-updates" data-testid="custom-updates-link">{{
+        "customExtensionUpdates" | i18n
+      }}</a>
       <bit-form-field>
         <bit-label>{{ "theme" | i18n }}</bit-label>
         <bit-select formControlName="theme">

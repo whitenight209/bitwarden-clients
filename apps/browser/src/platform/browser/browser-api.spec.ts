@@ -620,12 +620,12 @@ describe("BrowserApi", () => {
         expect(await BrowserApi.isAnyViewFocused()).toBe(true);
       });
 
-      it("returns true when a SIDE_PANEL context exists", async () => {
+      it("does not suppress inactivity locking merely because a SIDE_PANEL exists", async () => {
         (chrome.runtime as any).getContexts.mockResolvedValue([
           { contextType: "SIDE_PANEL", documentUrl: "chrome-extension://id/popup/index.html" },
         ]);
 
-        expect(await BrowserApi.isAnyViewFocused()).toBe(true);
+        expect(await BrowserApi.isAnyViewFocused()).toBe(false);
       });
 
       it("returns true when a popout TAB context has a focused window", async () => {

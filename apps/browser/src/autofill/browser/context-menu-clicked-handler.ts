@@ -33,6 +33,7 @@ import { CipherView } from "@bitwarden/common/vault/models/view/cipher.view";
 import { openUnlockPopout } from "../../auth/popup/utils/auth-popout-window";
 import { BrowserApi } from "../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../platform/browser/browser-popup-utils";
+import { SidePanelMode } from "../../platform/side-panel/side-panel-mode";
 import { TabMessage } from "../../types/tab-messages";
 // FIXME (PM-22628): Popup imports are forbidden in background
 // eslint-disable-next-line no-restricted-imports
@@ -319,7 +320,13 @@ export class ContextMenuClickedHandler {
       return;
     }
 
-    if (BrowserApi.isSidePanelApiSupported) {
+    if (
+      await SidePanelMode.open(`popup/index.html#/autofill-triage?senderTabId=${tab.id}`, {
+        senderWindowId: tab.windowId,
+      })
+    ) {
+      // The shared panel is ready; continue collecting the requesting tab.
+    } else if (BrowserApi.isSidePanelApiSupported) {
       // Open the UI immediately to preserve the user gesture required by sidePanel.open().
       // setSidePanelOptions must NOT be awaited before openSidePanel — awaiting would yield
       // the event loop and expire the gesture token. Both IPC calls are dispatched in the
@@ -420,6 +427,14 @@ export class ContextMenuClickedHandler {
 
   private async openWebmapperPanel(tab: chrome.tabs.Tab) {
     if (tab.id == null) {
+      return;
+    }
+    if (
+      await SidePanelMode.open(
+        `popup/index.html#/autofill-triage?view=webmapper&senderTabId=${tab.id}`,
+        { senderWindowId: tab.windowId },
+      )
+    ) {
       return;
     }
     if (BrowserApi.isSidePanelApiSupported) {

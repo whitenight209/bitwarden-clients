@@ -51,6 +51,7 @@ import { SecurityTask } from "@bitwarden/common/vault/tasks/models/security-task
 // eslint-disable-next-line no-restricted-imports
 import { AuthPopoutType, openUnlockPopout } from "../../auth/popup/utils/auth-popout-window";
 import { BrowserApi } from "../../platform/browser/browser-api";
+import { SidePanelMode } from "../../platform/side-panel/side-panel-mode";
 // FIXME (PM-22628): Popup imports are forbidden in background
 // eslint-disable-next-line no-restricted-imports
 import {
@@ -1736,6 +1737,16 @@ export default class NotificationBackground {
     sender: chrome.runtime.MessageSender,
   ) {
     await this.withSenderTab(sender, async (tab) => {
+      if (
+        await SidePanelMode.open("popup/index.html#/at-risk-passwords", {
+          senderWindowId: tab.windowId,
+        })
+      ) {
+        await BrowserApi.tabSendMessageData(tab, "closeNotificationBar", {
+          fadeOutNotification: !!message.fadeOutNotification,
+        });
+        return;
+      }
       const browserAction = BrowserApi.getBrowserAction();
       try {
         // Set route of the popup before attempting to open it.
@@ -1922,6 +1933,9 @@ export default class NotificationBackground {
   }
 
   private setupUnlockPopoutCloseListener() {
+    SidePanelMode.cancelled$.subscribe(() => {
+      void this.handleUnlockPopoutClosed(-1);
+    });
     chrome.tabs.onRemoved.addListener(async (tabId: number) => {
       await this.handleUnlockPopoutClosed(tabId);
     });
@@ -1932,6 +1946,9 @@ export default class NotificationBackground {
    * is still locked and there are pending autofill notifications, abandon them.
    */
   private async handleUnlockPopoutClosed(removedTabId: number) {
+    if (SidePanelMode.hasRequest(AuthPopoutType.unlockExtension)) {
+      return;
+    }
     const authStatus = await this.getAuthStatus();
     if (authStatus >= AuthenticationStatus.Unlocked) {
       this.unlockPopoutTabId = undefined;

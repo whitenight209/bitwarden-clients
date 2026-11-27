@@ -1,6 +1,7 @@
 import { Component, Input } from "@angular/core";
 import { ComponentFixture, TestBed } from "@angular/core/testing";
 import { By } from "@angular/platform-browser";
+import { provideRouter } from "@angular/router";
 import { mock } from "jest-mock-extended";
 import { BehaviorSubject, of } from "rxjs";
 
@@ -21,6 +22,7 @@ import { PopupCompactModeService } from "../../../platform/popup/layout/popup-co
 import { PopupHeaderComponent } from "../../../platform/popup/layout/popup-header.component";
 import { PopupPageComponent } from "../../../platform/popup/layout/popup-page.component";
 import { PopupSizeService } from "../../../platform/popup/layout/popup-size.service";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
 
 import { AppearanceComponent } from "./appearance.component";
 
@@ -85,6 +87,7 @@ describe("AppearanceComponent", () => {
     await TestBed.configureTestingModule({
       imports: [AppearanceComponent],
       providers: [
+        provideRouter([]),
         { provide: PlatformUtilsService, useValue: mock<PlatformUtilsService>() },
         { provide: MessagingService, useValue: mock<MessagingService>() },
         { provide: I18nService, useValue: { t: (key: string) => key } },
@@ -156,6 +159,7 @@ describe("AppearanceComponent", () => {
     await fixture.whenStable();
     fixture.detectChanges();
     expect(component.appearanceForm.value).toEqual({
+      sidePanelMode: false,
       enableAnimations: true,
       enableFavicon: true,
       enableBadgeCounter: true,
@@ -208,6 +212,34 @@ describe("AppearanceComponent", () => {
       component.appearanceForm.controls.width.setValue("wide");
 
       expect(mockWidthService.setWidth).toHaveBeenCalledWith("wide");
+    });
+  });
+
+  describe("side panel preference", () => {
+    it("sends mode changes through the shared background configuration", async () => {
+      await fixture.whenStable();
+      const save = jest.spyOn(SidePanelMode, "setEnabled").mockResolvedValue();
+      try {
+        component.appearanceForm.controls.sidePanelMode.setValue(true);
+        await fixture.whenStable();
+        expect(save).toHaveBeenCalledWith(true);
+      } finally {
+        save.mockRestore();
+      }
+    });
+
+    it("restores the stored preference when native configuration fails", async () => {
+      await fixture.whenStable();
+      const save = jest
+        .spyOn(SidePanelMode, "setEnabled")
+        .mockRejectedValue(new Error("Native configuration failed"));
+      try {
+        component.appearanceForm.controls.sidePanelMode.setValue(true);
+        await fixture.whenStable();
+        expect(component.appearanceForm.controls.sidePanelMode.value).toBe(false);
+      } finally {
+        save.mockRestore();
+      }
     });
   });
 

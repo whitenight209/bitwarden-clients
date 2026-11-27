@@ -147,6 +147,6 @@ export class HttpAuthenticationComponent {
       );
     }
 
-    window.close();
+    BrowserApi.closePopup(window);
   }
 }

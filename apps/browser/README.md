@@ -18,4 +18,14 @@ The Bitwarden browser extension is written using the Web Extension API and Angul
 
 ## Documentation
 
+커스텀 Chrome 확장 설치 파일은 [최신 GitHub Release](https://github.com/whitenight209/bitwarden-clients/releases/latest)에서 `extension-chrome-custom-VERSION.zip`을 내려받으세요. 압축을 풀고 `chrome://extensions` → 개발자 모드 → **압축해제된 확장 프로그램을 로드합니다**에서 `manifest.json`이 있는 폴더를 선택하면 됩니다.
+
+`main`에 확장 관련 변경을 푸시하면 [Custom Chrome Extension CI](https://github.com/whitenight209/bitwarden-clients/actions/workflows/publish-browser-custom.yml)가 자동으로 다음 버전을 빌드·게시합니다. Actions의 **Run workflow**로도 실행할 수 있으며 버전 입력을 비우면 자동으로 정합니다. 실행 결과의 **Artifacts**에서도 설치 ZIP을 받을 수 있습니다.
+
 Please refer to the [Browser section](https://contributing.bitwarden.com/getting-started/clients/browser/) of the [Contributing Documentation](https://contributing.bitwarden.com/) for build instructions, recommended tooling, code style tips, and lots of other great information to get you started.
+
+커스텀 Chrome 빌드의 현재 배포 구조와 변경 파일 기반 업데이트 설계는 [GitHub Releases 자동 업데이트 설계](../../docs/browser-extension-github-auto-update.md)를 참고하세요.
+
+설정 ON/OFF에 따라 모든 확장 화면 진입점을 패널로 전환하는 구조는 [사이드 패널 모드 설계](../../docs/browser-extension-side-panel-mode.md)를 참고하세요.
+
+CI 실행과 다운로드, 최초 설치와 자동 테스트 명령, 직접 실행할 E2E 시나리오는 [커스텀 기능 구현·테스트 가이드](../../docs/browser-extension-custom-features-testing.md)에 있습니다.

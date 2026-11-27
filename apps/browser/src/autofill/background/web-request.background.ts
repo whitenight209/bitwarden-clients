@@ -31,6 +31,7 @@ import { CipherView } from "@bitwarden/common/vault/models/view/cipher.view";
 import { newGuid } from "@bitwarden/guid";
 
 import { BrowserApi } from "../../platform/browser/browser-api";
+import { SidePanelMode } from "../../platform/side-panel/side-panel-mode";
 import { getWebExtSender } from "../../platform/utils/web-ext-sender";
 import { windowRemoved$ } from "../rx";
 import { CipherUse, FillCipherPolicy } from "../services/abstractions/fill-cipher-policy";
@@ -508,11 +509,16 @@ export default class WebRequestBackground {
               isExternalMessage(message) &&
               isHttpAuthenticationSelectionResponse(message) &&
               message.sessionId === sessionId &&
-              isHttpAuthenticationPopoutSender(getWebExtSender(message)?.url, sessionId),
+              isHttpAuthenticationPopoutSender(getWebExtSender(message)?.url, sessionId) &&
+              (!getWebExtSender(message)?.url?.includes("uilocation=sidepanel") ||
+                SidePanelMode.ownsRequest(
+                  getWebExtSender(message),
+                  `autofill_HttpAuthenticationPopout_${sessionId}`,
+                )),
           ),
           map(({ cipherId }) => (cipherId != null && offered.has(cipherId) ? cipherId : null)),
         ),
-        windowRemoved$().pipe(
+        merge(windowRemoved$(), SidePanelMode.cancelled$).pipe(
           filter((windowId) => popoutWindowId != null && windowId === popoutWindowId),
           map((): null => null),
         ),

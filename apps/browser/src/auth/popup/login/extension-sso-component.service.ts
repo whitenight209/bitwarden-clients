@@ -7,6 +7,8 @@ import { I18nService } from "@bitwarden/common/platform/abstractions/i18n.servic
 import { LogService } from "@bitwarden/common/platform/abstractions/log.service";
 import { SyncService } from "@bitwarden/common/vault/abstractions/sync/sync.service.abstraction";
 
+import { BrowserApi } from "../../../platform/browser/browser-api";
+
 /**
  * This service is used to handle the SSO login process for the browser extension.
  */
@@ -29,6 +31,6 @@ export class ExtensionSsoComponentService
    * Closes the popup window after a successful login.
    */
   async closeWindow() {
-    window.close();
+    BrowserApi.closePopup(window);
   }
 }

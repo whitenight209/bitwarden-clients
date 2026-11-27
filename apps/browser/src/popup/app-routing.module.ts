@@ -84,6 +84,7 @@ import {
 import { PhishingWarningComponent } from "../dirt/phishing-detection/popup/phishing-warning.component";
 import { ProtectedByComponent } from "../dirt/phishing-detection/popup/protected-by-component";
 import BrowserPopupUtils from "../platform/browser/browser-popup-utils";
+import { CustomUpdatesComponent } from "../platform/popup/components/custom-updates.component";
 import { popupRouterCacheGuard } from "../platform/popup/view-cache/popup-router-cache.service";
 import { RouteCacheOptions } from "../platform/services/popup-view-cache-background.service";
 import { CredentialGeneratorHistoryComponent } from "../tools/popup/generator/credential-generator-history.component";
@@ -429,6 +430,12 @@ const routes: Routes = [
     component: PremiumV2Component,
     canActivate: [authGuard],
     data: { elevation: 3 } satisfies RouteDataProperties,
+  },
+  {
+    path: "custom-updates",
+    component: CustomUpdatesComponent,
+    canActivate: [authGuard],
+    data: { elevation: 1 } satisfies RouteDataProperties,
   },
   {
     path: "appearance",

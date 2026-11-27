@@ -43,7 +43,7 @@ export class PopupRouterCacheService {
 
   constructor() {
     // init history with existing state
-    this.history$()
+    (BrowserPopupUtils.inPopup(window) ? this.history$() : of([]))
       .pipe(first())
       .subscribe(
         (history) => Array.isArray(history) && history.forEach(({ url }) => this.location.go(url)),
@@ -161,6 +161,9 @@ export async function resetPopupRouteHistory(stateProvider: StateProvider): Prom
  * Redirect to the last visited route. Should be applied to root route.
  **/
 export const popupRouterCacheGuard = ((): Observable<true | UrlTree> => {
+  if (!BrowserPopupUtils.inPopup(window)) {
+    return of(true);
+  }
   const popupHistoryService = inject(PopupRouterCacheService);
   const urlSerializer = inject(UrlSerializer);
 

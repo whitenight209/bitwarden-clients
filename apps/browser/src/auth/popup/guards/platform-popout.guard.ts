@@ -22,7 +22,7 @@ export function platformPopoutGuard(
 
     // Check if already in popout/sidebar
     const inPopout = BrowserPopupUtils.inPopout(window);
-    const inSidebar = BrowserPopupUtils.inSidebar(window);
+    const inSidebar = BrowserPopupUtils.inSidebar(window) || BrowserPopupUtils.inSidePanel(window);
 
     // Open popout if conditions met
     if ((isPlatformMatch || forcePopout) && !inPopout && !inSidebar) {

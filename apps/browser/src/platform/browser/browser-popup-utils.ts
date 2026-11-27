@@ -2,6 +2,8 @@
 // @ts-strict-ignore
 import { filter, firstValueFrom, interval, of, switchMap, takeWhile, timeout } from "rxjs";
 
+import { SidePanelMode } from "../side-panel/side-panel-mode";
+
 import { ScrollOptions } from "./abstractions/browser-popup-utils.abstractions";
 import { BrowserApi } from "./browser-api";
 import {
@@ -140,6 +142,10 @@ export default class BrowserPopupUtils {
       windowOptions?: Partial<chrome.windows.CreateData>;
     } = {},
   ) {
+    const panel = await SidePanelMode.open(extensionUrlPath, options);
+    if (panel) {
+      return panel;
+    }
     const { senderWindowId, singleActionKey, forceCloseExistingWindows, windowOptions } = options;
     const defaultPopoutWindowOptions: chrome.windows.CreateData = {
       type: "popup",
@@ -199,6 +205,9 @@ export default class BrowserPopupUtils {
    * @param delayClose - The amount of time to wait before closing the popout. Defaults to 0.
    */
   static async closeSingleActionPopout(popoutKey: string, delayClose = 0): Promise<void> {
+    if (await SidePanelMode.closeKey(popoutKey)) {
+      return;
+    }
     const extensionUrl = chrome.runtime.getURL("popup/index.html");
     const tabs = await BrowserApi.tabsQuery({ url: `${extensionUrl}*` });
     for (const tab of tabs) {

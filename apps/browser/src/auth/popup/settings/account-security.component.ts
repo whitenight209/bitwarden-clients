@@ -375,7 +375,7 @@ export class AccountSecurityComponent implements OnInit, OnDestroy {
     if (enabled) {
       const hadPermission = await BrowserApi.permissionsGranted(["nativeMessaging"]);
       if (!hadPermission) {
-        if (!BrowserPopupUtils.inPopout(window)) {
+        if (!BrowserPopupUtils.inPopout(window) && !BrowserPopupUtils.inSidePanel(window)) {
           // Requesting the permission outside a popout would close the window (granting reloads
           // the extension), so pop out to a stable window. The popped-out window presents the
           // dialog and requests the permission. With hash routing, Angular reads query params
@@ -417,7 +417,7 @@ export class AccountSecurityComponent implements OnInit, OnDestroy {
   async updateAllowSharingUnlockStateWithDesktop(enabled: boolean) {
     const hadPermission = await BrowserApi.permissionsGranted(["nativeMessaging"]);
     if (enabled && !hadPermission) {
-      if (!BrowserPopupUtils.inPopout(window)) {
+      if (!BrowserPopupUtils.inPopout(window) && !BrowserPopupUtils.inSidePanel(window)) {
         // Requesting the permission outside a popout would close the window (granting reloads the
         // extension), so pop out to a stable window. The popped-out window presents the dialog and
         // requests the permission. With hash routing, Angular reads query params from after the

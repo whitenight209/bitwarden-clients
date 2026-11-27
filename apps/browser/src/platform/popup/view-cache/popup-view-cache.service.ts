@@ -23,6 +23,7 @@ import {
 import { MessageSender } from "@bitwarden/common/platform/messaging";
 import { GlobalStateProvider } from "@bitwarden/common/platform/state";
 
+import BrowserPopupUtils from "../../browser/browser-popup-utils";
 import {
   ClEAR_VIEW_CACHE_COMMAND,
   POPUP_VIEW_CACHE_KEY,
@@ -55,9 +56,9 @@ export class PopupViewCacheService implements ViewCacheService {
    * Initialize the service. This should only be called once.
    */
   async init() {
-    const initialState = await firstValueFrom(
-      this.globalStateProvider.get(POPUP_VIEW_CACHE_KEY).state$,
-    );
+    const initialState = BrowserPopupUtils.inSidePanel(window)
+      ? {}
+      : await firstValueFrom(this.globalStateProvider.get(POPUP_VIEW_CACHE_KEY).state$);
     this._cache = Object.freeze(initialState ?? {});
 
     this.router.events
@@ -128,6 +129,9 @@ export class PopupViewCacheService implements ViewCacheService {
   }
 
   private updateState(key: string, value: string, options: ViewCacheState["options"]) {
+    if (BrowserPopupUtils.inSidePanel(window)) {
+      return;
+    }
     this.messageSender.send(SAVE_VIEW_CACHE_COMMAND, {
       key,
       value,
@@ -144,6 +148,9 @@ export class PopupViewCacheService implements ViewCacheService {
     } else {
       // Clear all entries
       this._cache = {};
+    }
+    if (BrowserPopupUtils.inSidePanel(window)) {
+      return;
     }
     this.messageSender.send(ClEAR_VIEW_CACHE_COMMAND, { routeChange: routeChange });
   }

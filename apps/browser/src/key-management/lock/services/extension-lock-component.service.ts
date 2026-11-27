@@ -40,7 +40,11 @@ export class ExtensionLockComponentService implements LockComponentService {
   }
 
   async popOutBrowserExtension(): Promise<void> {
-    if (!BrowserPopupUtils.inPopout(global.window) && !BrowserPopupUtils.inSidebar(global.window)) {
+    if (
+      !BrowserPopupUtils.inPopout(global.window) &&
+      !BrowserPopupUtils.inSidebar(global.window) &&
+      !BrowserPopupUtils.inSidePanel(global.window)
+    ) {
       await BrowserPopupUtils.openCurrentPagePopout(global.window);
     }
   }

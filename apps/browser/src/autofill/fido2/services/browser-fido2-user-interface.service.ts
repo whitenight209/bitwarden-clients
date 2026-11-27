@@ -27,6 +27,8 @@ import { Utils } from "@bitwarden/common/platform/misc/utils";
 
 import { BrowserApi } from "../../../platform/browser/browser-api";
 import { fromChromeEvent } from "../../../platform/browser/from-chrome-event";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
+import { getWebExtSender } from "../../../platform/utils/web-ext-sender";
 // FIXME (PM-22628): Popup imports are forbidden in background
 // eslint-disable-next-line no-restricted-imports
 import { closeFido2Popout, openFido2Popout } from "../../../vault/popup/utils/vault-popout-window";
@@ -179,8 +181,13 @@ export class BrowserFido2UserInterfaceSession implements Fido2UserInterfaceSessi
   }
 
   private closed = false;
-  private messages$ = (BrowserApi.messageListener$() as Observable<BrowserFido2Message>).pipe(
+  private messages$ = (BrowserApi.messageListener$(true) as Observable<BrowserFido2Message>).pipe(
     filter((msg) => msg.sessionId === this.sessionId),
+    filter(
+      (msg) =>
+        !SidePanelMode.hasRequest(`vault_Fido2Popout_${this.sessionId}`) ||
+        SidePanelMode.ownsRequest(getWebExtSender(msg), `vault_Fido2Popout_${this.sessionId}`),
+    ),
   );
   private connected$ = new BehaviorSubject(false);
   private windowClosed$: Observable<number>;
@@ -228,8 +235,9 @@ export class BrowserFido2UserInterfaceSession implements Fido2UserInterfaceSessi
         }
       });
 
-    this.windowClosed$ = fromChromeEvent(chrome.windows.onRemoved).pipe(
-      map(([windowId]) => windowId),
+    this.windowClosed$ = merge(
+      fromChromeEvent(chrome.windows.onRemoved).pipe(map(([windowId]) => windowId)),
+      SidePanelMode.cancelled$,
     );
 
     BrowserFido2UserInterfaceSession.sendMessage({

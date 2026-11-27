@@ -3,6 +3,8 @@
 import { Injectable } from "@angular/core";
 import { ActivatedRoute } from "@angular/router";
 import {
+  merge,
+  fromEvent,
   combineLatest,
   debounceTime,
   distinctUntilChanged,
@@ -40,6 +42,7 @@ import { InlineMenuFieldQualificationService } from "../../../autofill/services/
 import { didFillOccur, FillResult, shouldAutoCopyTotp } from "../../../autofill/types/fill-result";
 import { BrowserApi } from "../../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../../platform/browser/browser-popup-utils";
+import { fromChromeEvent } from "../../../platform/browser/from-chrome-event";
 import { devFlagEnabled } from "../../../platform/flags";
 import { closeViewVaultItemPopout, VaultPopoutType } from "../utils/vault-popout-window";
 
@@ -58,7 +61,16 @@ export class VaultPopupAutofillService {
    */
   currentAutofillTab$: Observable<chrome.tabs.Tab | null> = combineLatest([
     this.senderTabId$,
-    this._refreshCurrentTab$.pipe(startWith(null)),
+    merge(
+      this._refreshCurrentTab$,
+      ...(BrowserPopupUtils.inSidePanel(window)
+        ? [
+            fromChromeEvent(chrome.tabs.onActivated),
+            fromChromeEvent(chrome.tabs.onUpdated),
+            fromEvent(window, "focus"),
+          ]
+        : []),
+    ).pipe(startWith(null)),
   ]).pipe(
     switchMap(async ([senderTabId]) => {
       if (senderTabId) {

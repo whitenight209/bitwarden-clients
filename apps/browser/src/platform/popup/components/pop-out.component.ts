@@ -10,6 +10,7 @@ import { PlatformUtilsService } from "@bitwarden/common/platform/abstractions/pl
 import { ButtonType, IconButtonModule } from "@bitwarden/components";
 
 import BrowserPopupUtils from "../../browser/browser-popup-utils";
+import { SidePanelMode } from "../../side-panel/side-panel-mode";
 
 // FIXME(https://bitwarden.atlassian.net/browse/CL-764): Migrate to OnPush
 // eslint-disable-next-line @angular-eslint/prefer-on-push-component-change-detection
@@ -48,6 +49,10 @@ export class PopOutComponent implements OnInit {
   constructor(private platformUtilsService: PlatformUtilsService) {}
 
   async ngOnInit() {
+    await SidePanelMode.ready();
+    if (SidePanelMode.enabled || BrowserPopupUtils.inSidePanel(window)) {
+      this.show = false;
+    }
     if (this.show) {
       if (
         (BrowserPopupUtils.inSidebar(window) && this.platformUtilsService.isFirefox()) ||

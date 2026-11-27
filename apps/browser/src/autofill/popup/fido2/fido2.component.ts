@@ -45,6 +45,7 @@ import {
 } from "@bitwarden/components";
 import { PasswordRepromptService } from "@bitwarden/vault";
 
+import { BrowserApi } from "../../../platform/browser/browser-api";
 import { ZonedMessageListenerService } from "../../../platform/browser/zoned-message-listener.service";
 import { PopupHeaderComponent } from "../../../platform/popup/layout/popup-header.component";
 import { PopupPageComponent } from "../../../platform/popup/layout/popup-page.component";
@@ -430,7 +431,7 @@ export class Fido2Component implements OnInit, OnDestroy {
 
   abort(fallback: boolean) {
     this.unload(fallback);
-    window.close();
+    BrowserApi.closePopup(window);
   }
 
   unload(fallback = false) {

@@ -6,6 +6,7 @@ import { AuthenticationStatus } from "@bitwarden/common/auth/enums/authenticatio
 import { FeatureFlag } from "@bitwarden/common/enums/feature-flag.enum";
 import { ConfigService } from "@bitwarden/common/platform/abstractions/config/config.service";
 
+import BrowserPopupUtils from "../../../platform/browser/browser-popup-utils";
 import { ImportUpgradeNavigationService } from "../settings/import/import-upgrade-navigation.service";
 
 /**
@@ -41,6 +42,9 @@ export const importUpgradeRedirectGuard: CanActivateFn = async () => {
     return true;
   }
 
+  if (BrowserPopupUtils.inSidePanel(window)) {
+    return router.parseUrl("/import-source-select");
+  }
   await importUpgradeNavigationService.openImportSourceSelectTab();
   return router.parseUrl("/tabs/vault");
 };

@@ -10,6 +10,8 @@ import { isBrowserSafariApi, urlOriginsMatch } from "@bitwarden/platform";
 
 import { TabMessage } from "../../types/tab-messages";
 import { BrowserPlatformUtilsService } from "../services/platform-utils/browser-platform-utils.service";
+import { SidePanelMode } from "../side-panel/side-panel-mode";
+import { stampWebExtSender } from "../utils/web-ext-sender";
 
 import { registerContentScriptsPolyfill } from "./browser-api.register-content-scripts-polyfill";
 import { ExtensionInstallType } from "./extension-install-type";
@@ -182,6 +184,9 @@ export class BrowserApi {
    * @param windowId - The id of the window to remove.
    */
   static async removeWindow(windowId: number): Promise<void> {
+    if (SidePanelMode.isVirtualWindow(windowId)) {
+      return SidePanelMode.closeVirtual(windowId);
+    }
     return new Promise((resolve) => chrome.windows.remove(windowId, () => resolve()));
   }
 
@@ -195,6 +200,9 @@ export class BrowserApi {
     windowId: number,
     options: chrome.windows.UpdateInfo,
   ): Promise<void> {
+    if (SidePanelMode.isVirtualWindow(windowId)) {
+      return SidePanelMode.focusVirtual(windowId);
+    }
     return new Promise((resolve) =>
       chrome.windows.update(windowId, options, () => {
         resolve();
@@ -269,6 +277,13 @@ export class BrowserApi {
   }
 
   static async getTabFromCurrentWindow(): Promise<chrome.tabs.Tab> | null {
+    if (
+      typeof globalThis.window !== "undefined" &&
+      SidePanelMode.inPanel(globalThis.window) &&
+      SidePanelMode.owningWindowId != null
+    ) {
+      return BrowserApi.tabsQueryFirst({ active: true, windowId: SidePanelMode.owningWindowId });
+    }
     return await BrowserApi.tabsQueryFirstCurrentWindowForSafari({
       active: true,
       currentWindow: true,
@@ -574,7 +589,8 @@ export class BrowserApi {
    * Returns true if any extension view is currently active/focused.
    *
    * - Main popup: always considered focused (auto-closes on blur).
-   * - Sidebar: always considered focused (always visible).
+   * - Firefox sidebar: always considered focused.
+   * - Chrome side panel: actual input updates activity; its existence does not prevent locking.
    * - Popout windows: only focused if the window is currently focused.
    *
    * Uses `chrome.runtime.getContexts()` on MV3 (Chrome/Edge),
@@ -592,7 +608,7 @@ export class BrowserApi {
     ) {
       const contexts = await chrome.runtime.getContexts({});
 
-      if (contexts.some((c) => c.contextType === "POPUP" || c.contextType === "SIDE_PANEL")) {
+      if (contexts.some((c) => c.contextType === "POPUP")) {
         return true;
       }
 
@@ -620,7 +636,13 @@ export class BrowserApi {
     );
   }
 
-  static createNewTab(url: string, active = true): Promise<chrome.tabs.Tab> {
+  static async createNewTab(url: string, active = true): Promise<chrome.tabs.Tab> {
+    if (url.startsWith(chrome.runtime.getURL("popup/index.html"))) {
+      const panel = await SidePanelMode.open(url);
+      if (panel) {
+        return { id: panel.id, windowId: panel.id, url } as chrome.tabs.Tab;
+      }
+    }
     return new Promise((resolve) =>
       chrome.tabs.create({ url: url, active: active }, (tab) => resolve(tab)),
     );
@@ -698,10 +720,14 @@ export class BrowserApi {
     BrowserApi.addListener(chrome.runtime.onMessage, callback);
   }
 
-  static messageListener$() {
+  static messageListener$(includeSender = false) {
     return new Observable<unknown>((subscriber) => {
-      const handler = (message: unknown) => {
-        subscriber.next(message);
+      const handler = (message: unknown, sender: chrome.runtime.MessageSender) => {
+        subscriber.next(
+          includeSender && typeof message === "object" && message !== null
+            ? stampWebExtSender({ ...message }, sender)
+            : message,
+        );
       };
 
       BrowserApi.addListener(chrome.runtime.onMessage, handler);
@@ -819,6 +845,13 @@ export class BrowserApi {
   }
 
   static closePopup(win: Window) {
+    if (SidePanelMode.inPanel(win)) {
+      const key = new URL(win.location.href).searchParams.get("singleActionPopout");
+      if (key) {
+        void SidePanelMode.closeKey(key);
+      }
+      return;
+    }
     if (BrowserApi.isWebExtensionsApi && BrowserApi.isFirefoxOnAndroid) {
       // Reactivating the active tab dismisses the popup tab. The promise final
       // condition is only called if the popup wasn't already dismissed (future proofing).

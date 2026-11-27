@@ -9,6 +9,7 @@ import { SvgModule } from "@bitwarden/components";
 import { I18nPipe } from "@bitwarden/ui-common";
 
 import { BrowserApi } from "../../../../platform/browser/browser-api";
+import BrowserPopupUtils from "../../../../platform/browser/browser-popup-utils";
 
 import { ImportConfirmationStateService } from "./import-confirmation-state.service";
 import {
@@ -54,6 +55,11 @@ export class ImportConfirmationBrowserComponent {
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.confirmationState.clear());
+
+    if (BrowserPopupUtils.inSidePanel(window)) {
+      void this.router.navigate(["/tabs/vault"]);
+      return;
+    }
 
     if (this.confirmation == null) {
       void this.router.navigate(["/tabs/vault"]);

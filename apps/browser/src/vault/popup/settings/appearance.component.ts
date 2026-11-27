@@ -4,6 +4,7 @@ import { CommonModule } from "@angular/common";
 import { Component, DestroyRef, inject, OnInit } from "@angular/core";
 import { takeUntilDestroyed, toSignal } from "@angular/core/rxjs-interop";
 import { FormBuilder, ReactiveFormsModule } from "@angular/forms";
+import { RouterLink } from "@angular/router";
 import { firstValueFrom, switchMap } from "rxjs";
 
 import { JslibModule } from "@bitwarden/angular/jslib.module";
@@ -37,6 +38,7 @@ import { PopupCompactModeService } from "../../../platform/popup/layout/popup-co
 import { PopupHeaderComponent } from "../../../platform/popup/layout/popup-header.component";
 import { PopupPageComponent } from "../../../platform/popup/layout/popup-page.component";
 import { PopupSizeService } from "../../../platform/popup/layout/popup-size.service";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
 
 // FIXME(https://bitwarden.atlassian.net/browse/CL-764): Migrate to OnPush
 // eslint-disable-next-line @angular-eslint/prefer-on-push-component-change-detection
@@ -44,6 +46,7 @@ import { PopupSizeService } from "../../../platform/popup/layout/popup-size.serv
   templateUrl: "./appearance.component.html",
   imports: [
     CommonModule,
+    RouterLink,
     JslibModule,
     PopupPageComponent,
     PopupHeaderComponent,
@@ -73,6 +76,7 @@ export class AppearanceComponent implements OnInit {
   );
 
   appearanceForm = this.formBuilder.group({
+    sidePanelMode: false,
     enableFavicon: false,
     enableBadgeCounter: true,
     theme: ThemeTypes.System as Theme,
@@ -85,6 +89,9 @@ export class AppearanceComponent implements OnInit {
 
   /** To avoid flashes of inaccurate values, only show the form after the entire form is populated. */
   formLoading = true;
+  protected readonly sidePanelSupported = SidePanelMode.supported;
+  protected sidePanelSaving = false;
+  protected sidePanelError = "";
 
   /** Available theme options */
   themeOptions: { name: string; value: Theme }[];
@@ -115,6 +122,7 @@ export class AppearanceComponent implements OnInit {
   }
 
   async ngOnInit() {
+    await SidePanelMode.ready();
     const enableFavicon = await firstValueFrom(this.domainSettingsService.showFavicons$);
     const enableBadgeCounter = await firstValueFrom(this.badgeSettingsService.enableBadgeCounter$);
     const theme = await firstValueFrom(this.themeStateService.selectedTheme$);
@@ -132,6 +140,7 @@ export class AppearanceComponent implements OnInit {
 
     // Set initial values for the form
     this.appearanceForm.setValue({
+      sidePanelMode: SidePanelMode.enabled,
       enableFavicon,
       enableBadgeCounter,
       theme,
@@ -143,6 +152,27 @@ export class AppearanceComponent implements OnInit {
     });
 
     this.formLoading = false;
+    this.appearanceForm.controls.sidePanelMode.valueChanges
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((enabled) => {
+        this.sidePanelSaving = true;
+        this.sidePanelError = "";
+        void SidePanelMode.setEnabled(enabled === true)
+          .catch((error: unknown) => {
+            this.sidePanelError = String(error);
+            this.appearanceForm.controls.sidePanelMode.setValue(SidePanelMode.enabled, {
+              emitEvent: false,
+            });
+          })
+          .finally(() => {
+            this.sidePanelSaving = false;
+          });
+      });
+    SidePanelMode.enabled$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((enabled) =>
+        this.appearanceForm.controls.sidePanelMode.setValue(enabled, { emitEvent: false }),
+      );
 
     this.appearanceForm.controls.theme.valueChanges
       .pipe(takeUntilDestroyed(this.destroyRef))

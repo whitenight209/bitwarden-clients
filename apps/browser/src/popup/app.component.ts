@@ -61,6 +61,8 @@ import BrowserPopupUtils from "../platform/browser/browser-popup-utils";
 import { PopupCompactModeService } from "../platform/popup/layout/popup-compact-mode.service";
 import { PopupSizeService } from "../platform/popup/layout/popup-size.service";
 import { initPopupClosedListener } from "../platform/services/popup-view-cache-background.service";
+import { SidePanelMode } from "../platform/side-panel/side-panel-mode";
+import { connectUpdateView } from "../platform/updates/custom-update-agent";
 
 import { routerTransition } from "./app-routing.animations";
 
@@ -89,6 +91,8 @@ export class AppComponent implements OnInit, OnDestroy {
   private processingPendingAuthRequests = false;
   private shouldRerunAuthRequestProcessing = false;
 
+  private panelCleanup?: () => void;
+  private updateCleanup?: () => void;
   private destroy$ = new Subject<void>();
 
   // Show a warning if the SDK is not available.
@@ -133,6 +137,24 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   async ngOnInit() {
+    void SidePanelMode.ready();
+    this.updateCleanup = connectUpdateView();
+    this.panelCleanup = SidePanelMode.connectView(async (href) => {
+      const dirtyEditor =
+        /#\/(?:add-cipher|edit-cipher|add-send|edit-send|attachments)(?:[/?;]|$)/.test(
+          window.location.href,
+        ) && !!document.querySelector("form.ng-dirty");
+      if (dirtyEditor) {
+        return false;
+      }
+      const target = new URL(href);
+      const current = new URL(window.location.href);
+      current.search = target.search;
+      window.history.replaceState(window.history.state, "", current.href);
+      return this.ngZone.run(() =>
+        this.router.navigateByUrl(target.hash.slice(1) || "/tabs/vault"),
+      );
+    });
     initPopupClosedListener();
 
     this.compactModeService.init();
@@ -144,6 +166,16 @@ export class AppComponent implements OnInit, OnDestroy {
 
     await this.syncIfReturningFromCheckout();
     window.addEventListener("focus", this.onWindowFocus);
+
+    this.router.events
+      .pipe(
+        filter((event) => event instanceof NavigationEnd),
+        takeUntil(this.destroy$),
+      )
+      .subscribe((event: NavigationEnd) => {
+        SidePanelMode.recordRoute(event.urlAfterRedirects);
+        SidePanelMode.notifyReady();
+      });
 
     this.authRequestAnsweringService.setupUnlockListenersForProcessingAuthRequests(this.destroy$);
 
@@ -312,6 +344,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.panelCleanup?.();
+    this.updateCleanup?.();
     window.removeEventListener("focus", this.onWindowFocus);
     this.destroy$.next();
     this.destroy$.complete();

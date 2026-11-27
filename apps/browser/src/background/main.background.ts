@@ -422,6 +422,7 @@ import { PopupRouterCacheBackgroundService } from "../platform/services/popup-ro
 import { PopupViewCacheBackgroundService } from "../platform/services/popup-view-cache-background.service";
 import { BrowserSdkLoadService } from "../platform/services/sdk/browser-sdk-load.service";
 import { BackgroundTaskSchedulerService } from "../platform/services/task-scheduler/background-task-scheduler.service";
+import { SidePanelMode } from "../platform/side-panel/side-panel-mode";
 import { BackgroundMemoryStorageService } from "../platform/storage/background-memory-storage.service";
 import { BrowserStorageServiceProvider } from "../platform/storage/browser-storage-service.provider";
 import { OffscreenStorageService } from "../platform/storage/offscreen-storage.service";
@@ -2187,6 +2188,9 @@ export default class MainBackground {
    * @deprecated Migrating to the browser actions service.
    */
   async openPopup() {
+    if (await SidePanelMode.open()) {
+      return;
+    }
     const browserAction = BrowserApi.getBrowserAction();
 
     if ("openPopup" in browserAction && typeof browserAction.openPopup === "function") {
@@ -2201,6 +2205,9 @@ export default class MainBackground {
 
   /** Opens the `/at-risk-passwords` page within the popup */
   async openAtRisksPasswordsPage() {
+    if (await SidePanelMode.open(ExtensionPageUrls.AtRiskPasswords)) {
+      return;
+    }
     const browserAction = BrowserApi.getBrowserAction();
 
     try {
@@ -2226,6 +2233,9 @@ export default class MainBackground {
    * @deprecated Migrating to the browser actions service.
    */
   async openTheExtensionToPage(url: ExtensionPageUrls = ExtensionPageUrls.Index) {
+    if (Object.values(ExtensionPageUrls).includes(url) && (await SidePanelMode.open(url))) {
+      return;
+    }
     const isValidUrl = Object.values(ExtensionPageUrls).includes(url);
 
     // If a non-defined URL is provided, return early.

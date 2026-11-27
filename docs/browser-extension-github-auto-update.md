@@ -1,0 +1,88 @@
+# Chrome 확장 프로그램의 GitHub Releases 자동 업데이트
+
+최초에는 사용자가 Release ZIP을 압축해제하고 Chrome 개발자 모드에서 폴더를 수동 등록한다. 이후 확장은 **현재 버전과 GitHub Release의 숫자 버전을 비교**해 새 버전의 파일을 설치 폴더에 반영하고 재로드한다.
+
+사용자 요청에 따라 업데이트 서명키·공개 검증키와 서명 검증을 제거했다. CI에 별도 키나 Secret을 등록하지 않는다. 파일 해시는 변경 파일 계산과 다운로드·반영 결과의 정합성 검사에 사용한다.
+
+설치와 테스트는 [운영 가이드](browser-extension-custom-features-testing.md), 화면 전환은 [Side panel 모드](browser-extension-side-panel-mode.md)를 참고한다.
+
+## AS-IS: 변경 전 구조
+
+| 구성                                                        | 변경 전 동작                          | 자동 업데이트에 필요한 변경       |
+| ----------------------------------------------------------- | ------------------------------------- | --------------------------------- |
+| [build-browser.yml](../.github/workflows/build-browser.yml) | 빌드 ZIP을 Actions 아티팩트로 업로드  | GitHub Release 게시               |
+| [package.json](../apps/browser/package.json)                | 전체 빌드·압축                        | 최종 버전 입력, 파일 비교·패키징  |
+| [webpack.base.js](../apps/browser/webpack.base.js)          | apps/browser/build에 런타임 파일 생성 | 전체 파일 목록과 차이 계산        |
+| [compress.sh](../apps/browser/scripts/compress.sh)          | 전체 ZIP 생성                         | 변경 파일 ZIP과 삭제 계획         |
+| [manifest.v3.json](../apps/browser/src/manifest.v3.json)    | 소스 버전을 빌드에 사용               | 릴리스의 증가한 숫자 버전 반영    |
+| 확장 백그라운드                                             | GitHub 조회·폴더 변경 없음            | 주기적 확인·파일 적용·재로드·복구 |
+
+기존 requestUpdateCheck()는 Chrome이 관리하는 배포 경로용이다. GitHub ZIP을 압축해제 설치 폴더에 반영하려면 별도 파일 접근과 재로드가 필요하다. 소스 Git diff 대신 최종 JS·CSS·WASM·폰트·이미지·번역 파일의 바이트를 비교한다.
+
+## TO-BE: 구현한 흐름
+
+1. 버전 태그 push 또는 수동 실행으로 Chrome 프로덕션 빌드.
+2. Manifest 버전과 업데이트 저장소 설정 반영.
+3. 최종 파일 목록·해시, 전체 ZIP·변경 파일 ZIP·삭제 계획 생성.
+4. 이전 스냅샷에 패치를 재구성하고 목표 전체 빌드와 파일 집합·해시 비교.
+5. Draft Release에 모든 자산을 업로드한 뒤 공개.
+6. 확장이 현재 버전과 Release 버전을 비교해 새 버전 다운로드.
+7. 편집·인증이 끝나면 파일을 반영하고 재로드.
+8. 새 버전 부팅과 목표 파일을 확인한 뒤 저널 정리.
+
+## 버전 선택
+
+- 공개 저장소의 browser-custom-vVERSION 태그를 조회하며 Draft·Prerelease와 다른 태그 접두사는 제외한다.
+- 최대 네 자리 숫자 버전을 비교한다. 1.0.0.10은 1.0.0.9보다 높다.
+- 릴리스 목록을 페이지 단위로 읽고 현재 버전보다 높은 후보 중 숫자 버전이 가장 높은 것을 선택한다.
+- 태그·메타데이터·파일 목록·ZIP의 Manifest 버전이 일치해야 한다.
+- 이미 적용한 최고 버전을 저장해 자동 다운그레이드를 막는다. 실패 작업의 로컬 복원은 별도다.
+- 서명 파일을 생성·다운로드·검증하지 않으며 예전 .sig 자산이 있어도 무시한다.
+
+제품·브라우저·빌드 종류·채널과 호환성은 잘못된 자산 적용을 막는 구조 검사다. 새 버전 선택은 버전 비교로 결정한다. 구현은 [update-source.ts](../apps/browser/src/platform/updates/update-source.ts)와 [update-contract.ts](../apps/browser/src/platform/updates/update-contract.ts)에 있다.
+
+## CI 산출물
+
+예를 들어 browser-custom-v2026.11.0.2 릴리스에는 다음 파일을 게시한다.
+
+- extension-chrome-custom-2026.11.0.2.zip: 최초 설치와 버전 건너뛰기용 전체 빌드. 루트에 manifest.json 배치.
+- extension-files-2026.11.0.2.json: 모든 런타임 파일의 경로·크기·SHA-256과 버전·커밋.
+- patch-chrome-custom-2026.11.0.1-to-2026.11.0.2.zip: 지정 기준 버전의 추가·변경 파일.
+- patch-plan-2026.11.0.1-to-2026.11.0.2.json: 기준·목표 목록 해시, 쓸 파일과 삭제할 파일.
+- update-release.json: 제품·버전·태그·호환 조건과 각 자산의 이름·크기·해시.
+
+전체 ZIP에는 파일 목록의 복사본인 custom-update-installed.json도 포함한다. 이 예약 파일은 자기 해시 참조를 피하도록 일반 파일 목록에서 제외한다. custom-update-config.json에는 저장소·태그 접두사가 들어가며 키를 포함하지 않는다.
+
+write는 새 파일과 해시·크기가 바뀐 파일, delete는 이전 목록에만 있는 파일이다. 패치 기준은 버전과 설치 파일 목록의 SHA-256이다. 직전 버전과 기준 해시가 맞으면 델타를 사용한다. 버전을 건너뛰거나 기준 델타가 없으면 전체 ZIP을 받아 같은 차이 계산을 수행한다. 동일 파일은 다시 쓰지 않는다.
+
+## CI/CD 설정
+
+[커스텀 워크플로](../.github/workflows/publish-browser-custom.yml)는 main의 확장 관련 변경 push, browser-custom-v* 태그 push 또는 수동 실행으로 시작한다. main push와 버전 입력을 비운 수동 실행에서는 소스 버전과 이미 사용한 릴리스 버전보다 높은 숫자 버전을 자동 선택한다. 기존 일반 빌드는 유지한다.
+
+**업데이트용 Secret이나 키 등록은 필요 없다.** 기본 github.token으로 릴리스 읽기·게시를 수행한다. 빌드 job은 읽기, 게시 job은 contents: write를 사용한다. 같은 채널의 워크플로는 직렬화하며 같거나 높은 공개 버전이 있으면 배포를 거부한다.
+
+이전 릴리스가 없으면 전체 ZIP만 생성한다. 기준 릴리스가 있는데 정합성 검사에 실패하면 첫 배포로 간주하지 않고 실패시킨다. 정상 릴리스 자산을 덮어쓰지 않고 더 높은 버전으로 배포한다. 패키징은 [package-custom-update.mjs](../apps/browser/scripts/package-custom-update.mjs), 재구성 검증은 [verify-custom-update.mjs](../apps/browser/scripts/verify-custom-update.mjs)가 담당한다.
+
+## 최초 설치와 폴더 연결
+
+전체 ZIP을 고정 폴더에 풀고 Chrome에 등록한다. 설정의 커스텀 확장 업데이트에서 **실제 설치 폴더**를 선택하고 읽기·쓰기 권한을 허용한다. 선택기는 클릭 직후 실행한다.
+
+폴더 핸들은 별도 IndexedDB에 저장한다. Manifest·현재 버전·전체 파일 목록을 확인하고 연결 성공 시 자동 업데이트를 켠다. 실제 로드 폴더와 동일 내용의 복사본은 API로 구별할 수 없으므로 올바른 폴더를 선택해야 한다.
+
+Manifest에 원래 key가 있으면 기존 값을 유지한다. 별도 키를 요구하거나 생성하지 않는다. key가 없는 압축해제 설치본은 고정 설치 경로를 유지해 확장 ID를 보존한다. 계정·보관함·사용자 설정은 기존 확장 저장소를 사용하며 파일 반영 대상에 포함하지 않는다.
+
+최초 확인 알람은 약 1분 뒤, 이후 약 6시간마다 실행한다. Chrome 실행 상태와 알람 지연에 영향을 받는다. 수동 확인·적용 버튼도 제공하며 권한이 만료되면 재연결을 안내한다.
+
+## 적용과 복구
+
+[CustomUpdateAgent](../apps/browser/src/platform/updates/custom-update-agent.ts)는 버전·메타데이터·Chrome 호환성·설치 기준을 확인한다. 열린 화면 중 편집·파일 작업·인증 중이거나 응답 없는 화면이 있으면 적용을 보류한다.
+
+[파일 적용기](../apps/browser/src/platform/updates/update-files.ts)는 변경 전 파일과 삭제할 파일을 백업하고 저널을 먼저 저장한다. 변경 파일을 쓰고 Manifest를 마지막으로 반영한 뒤 제거된 파일을 삭제한다. 목표 파일을 확인하고 pendingReload 저널을 저장한 후 chrome.runtime.reload()를 호출한다. 새 버전 부팅·파일 확인 후 저널을 정리한다.
+
+쓰기·삭제 실패 시 이전 파일을 복원한다. 중단된 적용 저널은 다음 시작 시 권한이 있으면 복구하고 권한이 없으면 재승인을 기다린다. 기존 권한·실행 구조 변경은 현재 호환 정책에 따라 수동 설치로 처리한다.
+
+여러 파일 교체는 운영체제 수준의 원자적 교체가 아니다. 업데이터 실행 자체가 불가능한 손상은 확장을 삭제하지 않고 기존 설치 폴더에 정상 전체 ZIP을 복원해 다시 로드한다.
+
+## 검증
+
+자동 테스트는 패키징·파일 적용·복구·버전 선택과 Side panel 조율을 다룬다. 키·서명 파일 없이 새 버전을 선택·패키징하는 케이스를 포함한다. 실제 Chrome의 자기 폴더 쓰기·재로드와 재시작 후 권한 지속성은 사용자가 E2E로 검증한다. Web Store/CRX 설치는 대상이 아니다.

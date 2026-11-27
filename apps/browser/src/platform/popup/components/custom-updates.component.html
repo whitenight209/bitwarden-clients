@@ -1,0 +1,73 @@
+<popup-page [loading]="!state()">
+  <popup-header slot="header" [pageTitle]="'customExtensionUpdates' | i18n" showBackButton />
+  @if (state(); as current) {
+    <div class="tw-flex tw-flex-col tw-gap-4 tw-p-4" data-testid="custom-updates">
+      <p>{{ "version" | i18n }}: {{ current.version }}</p>
+      <p role="status" data-testid="update-status">{{ statusKeys[current.status] | i18n }}</p>
+      @if (current.configured) {
+        <p>{{ current.repository }}</p>
+        <p>{{ "customUpdateFolderHelp" | i18n }}</p>
+        <button
+          bitButton
+          type="button"
+          buttonType="secondary"
+          (click)="connectFolder()"
+          [disabled]="busy()"
+          data-testid="connect-update-folder"
+        >
+          {{
+            (current.connected ? "customUpdateReconnectFolder" : "customUpdateConnectFolder") | i18n
+          }}
+        </button>
+        <label class="tw-flex tw-items-center tw-gap-2">
+          <input
+            type="checkbox"
+            [checked]="current.automatic"
+            [disabled]="busy() || !current.connected"
+            (change)="setAutomatic($event)"
+            data-testid="automatic-updates"
+          />
+          {{ "customUpdateAutomatic" | i18n }}
+        </label>
+        <button
+          bitButton
+          type="button"
+          buttonType="secondary"
+          (click)="operation('check')"
+          [disabled]="busy()"
+          data-testid="check-custom-update"
+        >
+          {{ "customUpdateCheck" | i18n }}
+        </button>
+        @if (current.availableVersion) {
+          <p>{{ "customUpdateNewVersion" | i18n }}: {{ current.availableVersion }}</p>
+          <button
+            bitButton
+            type="button"
+            buttonType="primary"
+            (click)="operation('apply')"
+            [disabled]="busy() || !current.connected"
+            data-testid="apply-custom-update"
+          >
+            {{ "customUpdateApply" | i18n }}
+          </button>
+        }
+        @if (current.recoveryAvailable) {
+          <button
+            bitButton
+            type="button"
+            buttonType="secondary"
+            (click)="operation('restore')"
+            [disabled]="busy()"
+            data-testid="restore-custom-update"
+          >
+            {{ "customUpdateRestore" | i18n }}
+          </button>
+        }
+      }
+      @if (error() || current.error) {
+        <p role="alert" data-testid="custom-update-error">{{ error() || current.error }}</p>
+      }
+    </div>
+  }
+</popup-page>

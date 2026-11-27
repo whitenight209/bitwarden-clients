@@ -660,7 +660,8 @@ export class VaultPopupListTableComponent {
   );
 
   /** Whether the popup is rendered in the sidebar, where the autofill refresh control is offered. */
-  protected readonly showRefresh = BrowserPopupUtils.inSidebar(this.window);
+  protected readonly showRefresh =
+    BrowserPopupUtils.inSidebar(this.window) || BrowserPopupUtils.inSidePanel(this.window);
 
   /** The all-items section heading, which becomes "Search results" while a search is active. */
   protected readonly allItemsSectionKey = computed(() =>
