@@ -73,6 +73,7 @@ export class CustomUpdateAgent {
   private static startup?: Promise<void>;
   private static views: UpdateView[] = [];
   private static state: CustomUpdateStatus;
+  private static bootstrapped = false;
   private static preparation?: {
     id: string;
     expected: Set<string>;
@@ -99,6 +100,9 @@ export class CustomUpdateAgent {
         await CustomUpdateAgent.initializeBackground();
         switch (message[MESSAGE]) {
           case "state":
+            if (CustomUpdateAgent.bootstrapped) {
+              await CustomUpdateAgent.markHealthy();
+            }
             return {
               ...CustomUpdateAgent.state,
               folderPermission: await (
@@ -306,6 +310,14 @@ export class CustomUpdateAgent {
   }
 
   static async markHealthy(): Promise<void> {
+    CustomUpdateAgent.bootstrapped = true;
+    if (!CustomUpdateAgent.config) {
+      return;
+    }
+    await CustomUpdateAgent.withLock(() => CustomUpdateAgent.finishHealthyUpdate());
+  }
+
+  private static async finishHealthyUpdate(): Promise<void> {
     if (!CustomUpdateAgent.config) {
       return;
     }
@@ -316,6 +328,14 @@ export class CustomUpdateAgent {
     ) {
       const root = await getUpdateState<UpdateDirectory>("directory");
       if (!root) {
+        return;
+      }
+      if ((await root.queryPermission({ mode: "readwrite" })) !== "granted") {
+        await CustomUpdateAgent.publish({
+          status: "waiting",
+          recoveryAvailable: true,
+          error: "Allow access to the saved installation folder to verify and finish this update.",
+        });
         return;
       }
       await verifyDirectory(

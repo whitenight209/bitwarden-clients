@@ -348,3 +348,37 @@ test("failed startup file verification preserves the backup for recovery", async
   await expect(agent.markHealthy()).rejects.toThrow("File verification failed");
   expect(values.get("journal")).toBe(journal);
 });
+
+test("permission renewed after reload completes verification and deletes backup bytes without another reload", async () => {
+  let permission = "prompt";
+  values.set("directory", { queryPermission: async () => permission });
+  values.set("journal", {
+    phase: "pendingReload",
+    fromVersion: "1.0.0.0",
+    toVersion: "1.0.0.1",
+    target: encode(inventory("1.0.0.1")),
+    backup: ["old file bytes"],
+  });
+  await agent.initializeBackground();
+  await agent.markHealthy();
+  expect(values.has("journal")).toBe(true);
+  expect(files.verifyDirectory).not.toHaveBeenCalled();
+  permission = "granted";
+  const result = await send("state");
+  expect(result.status).toBe("current");
+  expect(result.recoveryAvailable).toBe(false);
+  expect(values.has("journal")).toBe(false);
+  expect(reload).not.toHaveBeenCalled();
+});
+
+test("reading update status before application bootstrap cannot finalize an update", async () => {
+  values.set("directory", { queryPermission: async () => "granted" });
+  values.set("journal", {
+    phase: "pendingReload",
+    toVersion: "1.0.0.1",
+    target: encode(inventory("1.0.0.1")),
+  });
+  await send("state");
+  expect(values.has("journal")).toBe(true);
+  expect(files.verifyDirectory).not.toHaveBeenCalled();
+});
