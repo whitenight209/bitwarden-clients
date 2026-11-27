@@ -85,6 +85,7 @@ export type CollectAutofillTriageAction = (
 
 export class ContextMenuClickedHandler {
   private _triageResult: AutofillTriagePageResult | undefined;
+  private authStatus: AuthenticationStatus | undefined;
 
   get triageResult(): AutofillTriagePageResult | undefined {
     return this._triageResult;
@@ -119,11 +120,24 @@ export class ContextMenuClickedHandler {
     private webmapperDrafts: WebmapperDraftService,
     private intraprocessMessageSender: IntraprocessMessageSender,
     private fillCipherPolicy: FillCipherPolicy,
-  ) {}
+  ) {
+    this.authService.activeAccountStatus$?.subscribe((status) => {
+      this.authStatus = status;
+    });
+  }
 
   async run(info: chrome.contextMenus.OnClickData, tab: chrome.tabs.Tab) {
     if (!tab) {
       return;
+    }
+
+    if (
+      (this.authStatus != null &&
+        this.authStatus < AuthenticationStatus.Unlocked &&
+        ![GENERATE_PASSWORD_ID, COPY_IDENTIFIER_ID].includes(String(info.menuItemId))) ||
+      [CREATE_LOGIN_ID, CREATE_CARD_ID, CREATE_IDENTITY_ID].includes(String(info.menuItemId))
+    ) {
+      void SidePanelMode.reveal(tab.windowId);
     }
 
     const menuItemId = String(info.menuItemId);

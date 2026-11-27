@@ -75,16 +75,44 @@ afterEach(() => {
 test("defaults to existing popup behavior", () => {
   expect(mode.enabled).toBe(false);
   expect(api.action.setPopup).toHaveBeenLastCalledWith({ popup: "popup/index.html" });
+  expect(api.sidePanel.setOptions).toHaveBeenLastCalledWith({
+    path: "popup/index.html?uilocation=sidepanel",
+    enabled: false,
+  });
 });
 
 test("ON and OFF persist the preference and configure both native action settings", async () => {
   await mode.setEnabled(true);
   expect(api.action.setPopup).toHaveBeenLastCalledWith({ popup: "" });
   expect(api.sidePanel.setPanelBehavior).toHaveBeenLastCalledWith({ openPanelOnActionClick: true });
+  expect(api.sidePanel.setOptions).toHaveBeenLastCalledWith({
+    path: "popup/index.html?uilocation=sidepanel",
+    enabled: true,
+  });
   expect(api.storage.local.set).toHaveBeenLastCalledWith({ customSidePanelModeEnabled: true });
   await mode.setEnabled(false);
   expect(mode.enabled).toBe(false);
   expect(api.action.setPopup).toHaveBeenLastCalledWith({ popup: "popup/index.html" });
+  expect(api.sidePanel.setOptions).toHaveBeenLastCalledWith({
+    path: "popup/index.html?uilocation=sidepanel",
+    enabled: false,
+  });
+});
+
+test("a cold worker restores the native panel after a lock/reload with the mode ON", async () => {
+  jest.resetModules();
+  api = chromeMock();
+  api.storage.local.get.mockResolvedValue({ customSidePanelModeEnabled: true });
+  Object.defineProperty(globalThis, "chrome", { value: api, configurable: true, writable: true });
+  mode = (await import("./side-panel-mode")).SidePanelMode;
+  await mode.initializeBackground();
+  expect(mode.enabled).toBe(true);
+  expect(api.sidePanel.setOptions).toHaveBeenLastCalledWith({
+    path: "popup/index.html?uilocation=sidepanel",
+    enabled: true,
+  });
+  expect(api.action.setPopup).toHaveBeenLastCalledWith({ popup: "" });
+  expect(api.sidePanel.setPanelBehavior).toHaveBeenLastCalledWith({ openPanelOnActionClick: true });
 });
 
 test("rolls native settings back if persisting the new preference fails", async () => {
@@ -108,6 +136,25 @@ test("ON opens the requesting window and returns a virtual ID, never the real br
   expect(api.sidePanel.open).toHaveBeenCalledWith({ windowId: 7 });
   expect(mode.isVirtualWindow(result!.id!)).toBe(true);
   expect(result!.id).not.toBe(7);
+});
+
+test("a cold foreground open loads the saved mode and actually attempts to reveal the panel", async () => {
+  jest.resetModules();
+  api = chromeMock();
+  api.storage.local.get.mockResolvedValue({ customSidePanelModeEnabled: true });
+  api.runtime.sendMessage.mockImplementation(async () => ({ id: -1_000_001 }));
+  Object.defineProperty(globalThis, "chrome", { value: api, configurable: true, writable: true });
+  mode = (await import("./side-panel-mode")).SidePanelMode;
+  await mode.open("popup/index.html#/lock", { senderWindowId: 7 });
+  expect(api.sidePanel.open).toHaveBeenCalledWith({ windowId: 7 });
+});
+
+test("reveal starts synchronously in the originating click and never opens when OFF", async () => {
+  expect(mode.reveal(7)).toBeUndefined();
+  await mode.setEnabled(true);
+  const pending = mode.reveal(7);
+  expect(api.sidePanel.open).toHaveBeenCalledWith({ windowId: 7 });
+  await pending;
 });
 
 test("a denied user gesture leaves a queued request instead of opening a fallback popout", async () => {

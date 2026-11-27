@@ -1,6 +1,10 @@
 import { EVENTS } from "@bitwarden/common/autofill/constants";
 
 import { BrowserApi } from "../../../../../platform/browser/browser-api";
+import {
+  INLINE_MENU_UI_COMMANDS,
+  INLINE_MENU_UI_MESSAGE,
+} from "../../../../../platform/side-panel/side-panel-entrypoints";
 import { generateRandomChars, setElementStyles } from "../../../../utils";
 import {
   InitAutofillInlineMenuElementMessage,
@@ -200,6 +204,26 @@ export class AutofillInlineMenuContainer {
       return;
     }
 
+    if (INLINE_MENU_UI_COMMANDS.has(message.command)) {
+      // One-shot runtime messages carry the click into the worker. Do not defer opening
+      // until after the ordinary port pipeline's async authentication/tab lookups.
+      const port = this.port;
+      void chrome.runtime
+        .sendMessage({
+          command: INLINE_MENU_UI_MESSAGE,
+          navigation: message,
+          portName: port.name,
+        })
+        .then(
+          (response) => {
+            if (!response?.handled) {
+              port.postMessage(message);
+            }
+          },
+          () => port.postMessage(message),
+        );
+      return;
+    }
     this.port.postMessage(message);
   }
 

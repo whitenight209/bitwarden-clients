@@ -25,6 +25,18 @@ describe("AutofillInlineMenuButton", () => {
   });
 
   describe("initAutofillInlineMenuButton", () => {
+    it.each([AuthenticationStatus.Locked, AuthenticationStatus.LoggedOut])(
+      "sends an explicit unlock entrypoint for auth status %s",
+      async (authStatus) => {
+        postWindowMessage(createInitAutofillInlineMenuButtonMessageMock({ authStatus, portKey }));
+        await flushPromises();
+        autofillInlineMenuButton["buttonElement"].click();
+        expect(globalThis.parent.postMessage).toHaveBeenCalledWith(
+          { command: "unlockVault", portKey, token: "test-token" },
+          expectedOrigin,
+        );
+      },
+    );
     it("creates the button element with the locked icon when the user's auth status is not Unlocked", async () => {
       postWindowMessage(
         createInitAutofillInlineMenuButtonMessageMock({

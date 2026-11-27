@@ -70,8 +70,10 @@ jobs:
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Building Chrome extension **${version}**.\n`);
           JS
       - run: npm ci
-      - name: Test update contract and packaging
-        run: npm run test:custom-updates --workspace @bitwarden/browser
+      - name: Test update packaging
+        run: node --experimental-strip-types --test apps/browser/scripts/custom-update-package.test.mjs
+      - name: Test all browser extension features
+        run: npm exec --workspace @bitwarden/browser -- jest --maxWorkers=2
       - name: Download and verify previous custom release
         env:
           GH_TOKEN: ${{ github.token }}

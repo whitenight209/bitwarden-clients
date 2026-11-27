@@ -10,6 +10,7 @@ import { DialogService, ToastService } from "@bitwarden/components";
 
 import { BrowserApi } from "../../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../../platform/browser/browser-popup-utils";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
 import { AutofillTriagePageResult } from "../../types/autofill-triage";
 
 import { AutofillTriageComponent } from "./autofill-triage.component";
@@ -87,6 +88,7 @@ describe("AutofillTriageComponent", () => {
     } as any;
 
     jest.spyOn(BrowserApi, "getCurrentTab").mockResolvedValue(mockTab);
+    jest.spyOn(BrowserApi, "getTabFromCurrentWindow").mockResolvedValue(mockTab);
     jest.spyOn(BrowserApi, "addListener").mockImplementation(() => {});
     jest.spyOn(BrowserApi, "removeListener").mockImplementation(() => {});
     jest.spyOn(BrowserApi, "isSidePanelApiSupported", "get").mockReturnValue(false);
@@ -242,18 +244,26 @@ describe("AutofillTriageComponent", () => {
       const activeTab = { id: 99 } as chrome.tabs.Tab;
       jest.spyOn(BrowserApi, "getCurrentTab").mockResolvedValue(null);
       jest.spyOn(BrowserPopupUtils, "inSidePanel").mockReturnValue(true);
-      jest.spyOn(BrowserApi, "tabsQuery").mockResolvedValue([activeTab]);
+      jest.spyOn(BrowserApi, "getTabFromCurrentWindow").mockResolvedValue(activeTab);
       jest.spyOn(BrowserApi, "sendMessageWithResponse").mockResolvedValue(null);
 
       void component.ngOnInit();
       tick();
 
-      expect(BrowserApi.tabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true });
+      expect(BrowserApi.getTabFromCurrentWindow).toHaveBeenCalled();
       expect(component["currentTabId"]()).toBe(99);
     }));
   });
 
   describe("ngOnDestroy", () => {
+    it("keeps the shared side panel enabled when leaving triage in mode ON", async () => {
+      jest.spyOn(BrowserPopupUtils, "inSidePanel").mockReturnValue(true);
+      jest.spyOn(SidePanelMode, "enabled", "get").mockReturnValue(true);
+      const options = jest.spyOn(BrowserApi, "setSidePanelOptions").mockResolvedValue();
+      await component.ngOnInit();
+      component.ngOnDestroy();
+      expect(options).not.toHaveBeenCalled();
+    });
     it("should remove the message listener via BrowserApi.removeListener", async () => {
       await component.ngOnInit();
       component.ngOnDestroy();

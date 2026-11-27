@@ -168,7 +168,7 @@ describe("Fido2Background", () => {
     let portMock!: MockProxy<chrome.runtime.Port>;
 
     beforeEach(() => {
-      jest.spyOn(fido2Background as any, "handleAuthStatusUpdate").mockImplementation();
+      jest.spyOn(fido2Background as any, "handleAuthStatusUpdate").mockResolvedValue(undefined);
       fido2Background.init();
       jest.spyOn(BrowserApi, "registerContentScriptsMv2");
       jest.spyOn(BrowserApi, "registerContentScriptsMv3");
@@ -250,6 +250,58 @@ describe("Fido2Background", () => {
     });
 
     describe("given manifest v3", () => {
+      beforeEach(() => {
+        jest
+          .mocked(chrome.scripting.getRegisteredContentScripts)
+          .mockImplementation(async () => []);
+      });
+
+      it("replaces registrations left by the previous worker before registering their IDs", async () => {
+        isManifestVersionSpy.mockImplementation((version) => version === 3);
+        const registered = new Map<string, chrome.scripting.RegisteredContentScript>([
+          [
+            Fido2ContentScriptId.PageScript,
+            { id: Fido2ContentScriptId.PageScript, js: [Fido2ContentScript.PageScript] },
+          ],
+          [
+            Fido2ContentScriptId.ContentScript,
+            { id: Fido2ContentScriptId.ContentScript, js: [Fido2ContentScript.ContentScript] },
+          ],
+        ]);
+        jest
+          .mocked(chrome.scripting.getRegisteredContentScripts)
+          .mockImplementation(async () => [...registered.values()]);
+        jest
+          .mocked(chrome.scripting.unregisterContentScripts)
+          .mockImplementation(async ({ ids }) => {
+            ids?.forEach((id) => registered.delete(id));
+          });
+        jest.mocked(chrome.scripting.registerContentScripts).mockImplementation(async (scripts) => {
+          for (const script of scripts) {
+            if (registered.has(script.id)) {
+              throw new Error(`Duplicate script ID '${script.id}'`);
+            }
+            registered.set(script.id, script);
+          }
+        });
+        try {
+          await Promise.all([
+            fido2Background["updateContentScriptRegistration"](),
+            fido2Background["updateContentScriptRegistration"](),
+          ]);
+          expect([...registered.keys()]).toEqual([
+            Fido2ContentScriptId.PageScript,
+            Fido2ContentScriptId.ContentScript,
+          ]);
+          expect(BrowserApi.registerContentScriptsMv3).toHaveBeenCalledTimes(2);
+        } finally {
+          jest
+            .mocked(chrome.scripting.getRegisteredContentScripts)
+            .mockImplementation(async () => []);
+          jest.mocked(chrome.scripting.registerContentScripts).mockReset();
+          jest.mocked(chrome.scripting.unregisterContentScripts).mockReset();
+        }
+      });
       it("registers the page-script.js and content-script.js content scripts when the enablePasskeys setting is set to `true`", async () => {
         isManifestVersionSpy.mockImplementation((manifestVersion) => manifestVersion === 3);
 
@@ -274,6 +326,10 @@ describe("Fido2Background", () => {
 
       it("unregisters the page-script.js and content-script.js content scripts when the enablePasskeys setting is set to `false`", async () => {
         isManifestVersionSpy.mockImplementation((manifestVersion) => manifestVersion === 3);
+        jest.mocked(chrome.scripting.getRegisteredContentScripts).mockImplementation(async () => [
+          { id: Fido2ContentScriptId.PageScript, js: [Fido2ContentScript.PageScript] },
+          { id: Fido2ContentScriptId.ContentScript, js: [Fido2ContentScript.ContentScript] },
+        ]);
 
         enablePasskeysMock$.next(false);
         await flushPromises();
@@ -786,7 +842,7 @@ describe("Fido2Background", () => {
     let portMock!: MockProxy<chrome.runtime.Port>;
 
     beforeEach(() => {
-      jest.spyOn(fido2Background as any, "handleAuthStatusUpdate").mockImplementation();
+      jest.spyOn(fido2Background as any, "handleAuthStatusUpdate").mockResolvedValue(undefined);
       fido2Background.init();
       portMock = createPortSpyMock(Fido2PortName.InjectedScript);
       triggerRuntimeOnConnectEvent(portMock);

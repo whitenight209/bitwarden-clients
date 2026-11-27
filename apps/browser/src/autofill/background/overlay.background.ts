@@ -69,6 +69,11 @@ import { GeneratorHistoryService } from "@bitwarden/generator-history";
 // eslint-disable-next-line no-restricted-imports
 import { openUnlockPopout } from "../../auth/popup/utils/auth-popout-window";
 import { BrowserApi } from "../../platform/browser/browser-api";
+import {
+  INLINE_MENU_UI_COMMANDS,
+  INLINE_MENU_UI_MESSAGE,
+} from "../../platform/side-panel/side-panel-entrypoints";
+import { SidePanelMode } from "../../platform/side-panel/side-panel-mode";
 // FIXME (PM-22628): Popup imports are forbidden in background
 // eslint-disable-next-line no-restricted-imports
 import {
@@ -239,6 +244,7 @@ export class OverlayBackground implements OverlayBackgroundInterface {
       void this.withSenderTab(sender, (tab) => this.routeTargetedFieldsToFrame(tab, message)),
   };
   private readonly inlineMenuButtonPortMessageHandlers: InlineMenuButtonPortMessageHandlers = {
+    unlockVault: ({ port }) => this.unlockVault(port),
     triggerDelayedAutofillInlineMenuClosure: () => this.startInlineMenuDelayedClose$.next(),
     autofillInlineMenuButtonClicked: ({ port }) => this.handleInlineMenuButtonClicked(port),
     autofillInlineMenuBlurred: () => this.checkInlineMenuListFocused(),
@@ -3476,6 +3482,33 @@ export class OverlayBackground implements OverlayBackgroundInterface {
     sender: chrome.runtime.MessageSender,
     sendResponse: (response?: any) => void,
   ) => {
+    if (message?.command === INLINE_MENU_UI_MESSAGE) {
+      const navigation = message.navigation;
+      const port =
+        message.portName === AutofillOverlayPort.ListMessageConnector
+          ? this.inlineMenuListMessageConnectorPort
+          : message.portName === AutofillOverlayPort.ButtonMessageConnector
+            ? this.inlineMenuButtonMessageConnectorPort
+            : null;
+      // Reuse the established connector identity and per-tab nonce. The sender's browser
+      // window is authoritative; no caller-supplied target window or arbitrary route is used.
+      if (
+        navigation &&
+        INLINE_MENU_UI_COMMANDS.has(navigation.command) &&
+        sender.id === chrome.runtime.id &&
+        sender.tab?.id != null &&
+        port?.sender?.tab?.id === sender.tab.id &&
+        port.sender.frameId === sender.frameId &&
+        port.sender.documentId === sender.documentId &&
+        this.portKeyForTab[sender.tab.id] === navigation.portKey &&
+        navigation.portKey
+      ) {
+        void SidePanelMode.reveal(sender.tab.windowId);
+        this.handleOverlayElementPortMessage(navigation, port);
+      }
+      sendResponse({ handled: true });
+      return;
+    }
     const handler: CallableFunction | undefined = this.extensionMessageHandlers[message?.command];
     if (!handler) {
       return;

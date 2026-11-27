@@ -2,6 +2,7 @@
 // @ts-strict-ignore
 import { BrowserApi } from "../../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../../platform/browser/browser-popup-utils";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
 
 const AuthPopoutType = {
   unlockExtension: "auth_unlockExtension",
@@ -25,6 +26,16 @@ const extensionUnlockUrls = new Set([
  *   may be purged by tab removal events.
  */
 async function openUnlockPopout(senderTab: chrome.tabs.Tab, onOpened?: () => void) {
+  // Preserve the originating click: panel opening must start before querying old tabs.
+  const panel = await SidePanelMode.open("popup/index.html#/lock", {
+    singleActionKey: AuthPopoutType.unlockExtension,
+    senderWindowId: senderTab.windowId,
+  });
+  if (panel) {
+    onOpened?.();
+    await BrowserApi.tabSendMessageData(senderTab, "bgUnlockPopoutOpened", {});
+    return;
+  }
   const existingPopoutWindowTabs = await BrowserApi.tabsQuery({ windowType: "popup" });
   existingPopoutWindowTabs.forEach((tab) => {
     if (extensionUnlockUrls.has(tab.url)) {

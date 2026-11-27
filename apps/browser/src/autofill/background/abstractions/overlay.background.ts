@@ -143,6 +143,8 @@ export type UpdateInlineMenuVisibilityMessage = {
 
 export type OverlayBackgroundExtensionMessage = {
   command: string;
+  navigation?: OverlayBackgroundExtensionMessage;
+  portName?: string;
   portKey?: string;
   tab?: chrome.tabs.Tab;
   sender?: string;
@@ -287,6 +289,7 @@ export type PortOnMessageHandlerParams = PortMessageParam & PortConnectionParam;
 
 export type InlineMenuButtonPortMessageHandlers = {
   [key: string]: CallableFunction;
+  unlockVault: ({ port }: PortConnectionParam) => void;
   triggerDelayedAutofillInlineMenuClosure: () => void;
   autofillInlineMenuButtonClicked: ({ port }: PortConnectionParam) => void;
   autofillInlineMenuBlurred: () => void;

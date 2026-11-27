@@ -1,5 +1,8 @@
+import { lockAndReopen } from "../../../src/browser/account-switcher";
 import { expect, popupUrl, reopenPopup, test, watchShutdown } from "../../../src/browser/fixtures";
+import { clickInlineUnlock } from "../../../src/browser/inline-menu";
 import { NativeSidePanel, openNativeSidePanel } from "../../../src/browser/side-panel";
+import { LockScreen } from "../../../src/lock-screen";
 import { LoginPage } from "../../../src/login";
 
 test.beforeEach(async ({ popup, context }) => {
@@ -55,6 +58,37 @@ test("keeps the selected mode across a complete extension reload", async ({ popu
         (await chrome.storage.local.get("customSidePanelModeEnabled")).customSidePanelModeEnabled,
     ),
   ).toBe(true);
+  expect(await reopened.evaluate(() => chrome.sidePanel.getOptions({}))).toMatchObject({
+    enabled: true,
+  });
+});
+
+test("ON survives account lock and reopens a native panel displaying the unlock screen", async ({
+  popup,
+  context,
+}) => {
+  await popup.getByTestId("side-panel-mode").check();
+  await expect.poll(() => popup.evaluate(() => chrome.action.getPopup({}))).toBe("");
+  await popup.goto((await popupUrl(context)) + "#/tabs/vault");
+  const locked = await lockAndReopen(context, popup);
+  await new LockScreen(locked).waitUntilShown();
+  expect(await locked.evaluate(() => chrome.sidePanel.getOptions({}))).toMatchObject({
+    enabled: true,
+    path: "popup/index.html?uilocation=sidepanel",
+  });
+  expect(await locked.evaluate(() => chrome.action.getPopup({}))).toBe("");
+  const windowId = await openNativeSidePanel(locked);
+  const panel = await NativeSidePanel.attach(context, locked, windowId);
+  try {
+    await expect
+      .poll(() => panel.evaluate<boolean>("!!document.querySelector('[data-testid=lock-screen]')"))
+      .toBe(true);
+    expect(await locked.evaluate(() => chrome.sidePanel.getOptions({}))).toMatchObject({
+      enabled: true,
+    });
+  } finally {
+    await panel.dispose();
+  }
 });
 
 test("opens a genuine SIDE_PANEL context without creating a popup window", async ({
@@ -75,6 +109,60 @@ test("opens a genuine SIDE_PANEL context without creating a popup window", async
     await panel.dispose();
   }
 });
+
+for (const enabled of [false, true]) {
+  test(`inline autofill Unlock opens ${enabled ? "the native panel" : "the legacy window"} after account lock`, async ({
+    popup,
+    context,
+  }) => {
+    if (enabled) {
+      await popup.getByTestId("side-panel-mode").check();
+      await expect.poll(() => popup.evaluate(() => chrome.action.getPopup({}))).toBe("");
+    }
+    const url = await popupUrl(context);
+    await popup.goto(url + "#/autofill");
+    await popup.locator("#show-inline-menu").check();
+    await popup.goto(url + "#/tabs/vault");
+    const locked = await lockAndReopen(context, popup);
+    await new LockScreen(locked).waitUntilShown();
+    const before = await locked.evaluate(async () => (await chrome.windows.getAll()).length);
+    const website = await context.newPage();
+    await website.route("http://localhost/side-panel-unlock-regression", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: '<!doctype html><title>Inline unlock regression</title><form><label>Username<input name="username" autocomplete="username"></label><label>Password<input type="password" name="password" autocomplete="current-password"></label><button>Log in</button></form>',
+      }),
+    );
+    await website.goto("http://localhost/side-panel-unlock-regression");
+    await website.locator('input[name="username"]').click();
+    await clickInlineUnlock(context, website);
+    if (enabled) {
+      const windowId = await locked.evaluate(async () => (await chrome.windows.getCurrent()).id!);
+      const panel = await NativeSidePanel.attach(context, locked, windowId);
+      try {
+        await expect
+          .poll(() =>
+            panel.evaluate<boolean>("!!document.querySelector('[data-testid=lock-screen]')"),
+          )
+          .toBe(true);
+        expect(await locked.evaluate(async () => (await chrome.windows.getAll()).length)).toBe(
+          before,
+        );
+      } finally {
+        await panel.dispose();
+      }
+    } else {
+      await expect
+        .poll(() => locked.evaluate(async () => (await chrome.windows.getAll()).length))
+        .toBe(before + 1);
+      const unlock = context
+        .pages()
+        .find((page) => page.url().includes("singleActionPopout=auth_unlockExtension"));
+      expect(unlock).toBeDefined();
+      await new LockScreen(unlock!).waitUntilShown();
+    }
+  });
+}
 
 test("routes an internal screen request inside the existing native panel", async ({
   popup,

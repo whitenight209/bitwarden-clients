@@ -40,6 +40,7 @@ export class Fido2Background implements Fido2BackgroundInterface {
   private abortManager = new AbortManager();
   private fido2ContentScriptPortsSet = new Set<chrome.runtime.Port>();
   private activeCredentialRequests = new Set<number>();
+  private registrationUpdate: Promise<void> = Promise.resolve();
   private registeredContentScripts: browser.contentScripts.RegisteredContentScript | undefined =
     undefined;
   private readonly sharedInjectionDetails: SharedFido2ScriptInjectionDetails = {
@@ -106,12 +107,16 @@ export class Fido2Background implements Fido2BackgroundInterface {
     BrowserApi.addListener(chrome.runtime.onConnect, this.handleInjectedScriptPortConnection);
     this.vaultSettingsService.enablePasskeys$
       .pipe(startWith(undefined), pairwise())
-      .subscribe(([previous, current]) => this.handleEnablePasskeysUpdate(previous, current));
+      .subscribe(([previous, current]) => {
+        void this.handleEnablePasskeysUpdate(previous, current).catch((error) =>
+          this.logService.error(error),
+        );
+      });
     this.currentAuthStatus$ = this.authService.activeAccountStatus$
       .pipe(startWith(undefined), pairwise())
       .subscribe(([_previous, current]) => {
         if (current !== undefined) {
-          void this.handleAuthStatusUpdate(current);
+          void this.handleAuthStatusUpdate(current).catch((error) => this.logService.error(error));
         }
       });
   }
@@ -200,7 +205,12 @@ export class Fido2Background implements Fido2BackgroundInterface {
       return;
     }
 
-    await this.updateMv3ContentScriptsRegistration();
+    // Chrome retains registrations when the worker stops. Serialize startup and setting
+    // changes so neither can register an ID concurrently with another update.
+    this.registrationUpdate = this.registrationUpdate
+      .catch(() => {})
+      .then(() => this.updateMv3ContentScriptsRegistration());
+    await this.registrationUpdate;
   }
 
   /**
@@ -228,8 +238,14 @@ export class Fido2Background implements Fido2BackgroundInterface {
    * scripts based on the enablePasskeys setting for manifest v3.
    */
   private async updateMv3ContentScriptsRegistration() {
+    const existing = await chrome.scripting.getRegisteredContentScripts({
+      ids: [Fido2ContentScriptId.PageScript, Fido2ContentScriptId.ContentScript],
+    });
+    if (existing.length) {
+      await BrowserApi.unregisterContentScriptsMv3({ ids: existing.map((script) => script.id) });
+    }
     if (await this.isPasskeySettingEnabled()) {
-      void BrowserApi.registerContentScriptsMv3([
+      await BrowserApi.registerContentScriptsMv3([
         {
           id: Fido2ContentScriptId.PageScript,
           js: [Fido2ContentScript.PageScript],
@@ -245,10 +261,6 @@ export class Fido2Background implements Fido2BackgroundInterface {
 
       return;
     }
-
-    void BrowserApi.unregisterContentScriptsMv3({
-      ids: [Fido2ContentScriptId.PageScript, Fido2ContentScriptId.ContentScript],
-    });
   }
 
   /**

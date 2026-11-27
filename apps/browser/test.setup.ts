@@ -94,6 +94,7 @@ const tabs = {
 const scripting = {
   executeScript: jest.fn(),
   registerContentScripts: jest.fn(),
+  getRegisteredContentScripts: jest.fn().mockResolvedValue([]),
   unregisterContentScripts: jest.fn(),
   ExecutionWorld: { ISOLATED: "ISOLATED", MAIN: "MAIN" },
 };

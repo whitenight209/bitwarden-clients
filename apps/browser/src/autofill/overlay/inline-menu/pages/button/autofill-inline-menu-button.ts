@@ -95,7 +95,12 @@ export class AutofillInlineMenuButton extends AutofillInlineMenuPageElement {
    * parent window indicating that the button was clicked.
    */
   private handleButtonElementClick = () => {
-    this.postMessageToParent({ command: "autofillInlineMenuButtonClicked" });
+    this.postMessageToParent({
+      command:
+        this.authStatus === AuthenticationStatus.Unlocked
+          ? "autofillInlineMenuButtonClicked"
+          : "unlockVault",
+    });
   };
 
   /**

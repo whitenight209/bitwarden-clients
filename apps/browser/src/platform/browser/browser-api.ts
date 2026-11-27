@@ -149,6 +149,16 @@ export class BrowserApi {
   }
 
   static async createWindow(options: chrome.windows.CreateData): Promise<chrome.windows.Window> {
+    // Enforce the display mode at the native boundary, including callers bypassing popout utils.
+    if (typeof options.url === "string" && SidePanelMode.isUiUrl(options.url)) {
+      const url = new URL(options.url, chrome.runtime.getURL("/"));
+      const panel = await SidePanelMode.open(options.url, {
+        singleActionKey: url.searchParams.get("singleActionPopout") ?? undefined,
+      });
+      if (panel) {
+        return panel;
+      }
+    }
     return new Promise((resolve) => {
       chrome.windows.create(options, async (newWindow) => {
         if (!BrowserApi.isSafariApi) {
@@ -637,7 +647,7 @@ export class BrowserApi {
   }
 
   static async createNewTab(url: string, active = true): Promise<chrome.tabs.Tab> {
-    if (url.startsWith(chrome.runtime.getURL("popup/index.html"))) {
+    if (SidePanelMode.isUiUrl(url)) {
       const panel = await SidePanelMode.open(url);
       if (panel) {
         return { id: panel.id, windowId: panel.id, url } as chrome.tabs.Tab;

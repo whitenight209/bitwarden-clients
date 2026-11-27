@@ -26,12 +26,14 @@ import {
   RETRY_WHEN_UNLOCK_COMPLETED,
 } from "../autofill/background/abstractions/notification.background";
 import { BrowserApi } from "../platform/browser/browser-api";
+import { SidePanelMode } from "../platform/side-panel/side-panel-mode";
 
 import MainBackground from "./main.background";
 
 export default class CommandsBackground {
   private isSafari: boolean;
   private isVivaldi: boolean;
+  private authStatus: AuthenticationStatus | undefined;
 
   constructor(
     private main: MainBackground,
@@ -49,6 +51,9 @@ export default class CommandsBackground {
   }
 
   init() {
+    this.authService.activeAccountStatus$?.subscribe((status) => {
+      this.authStatus = status;
+    });
     this.messageListener
       .messages$(RETRY_WHEN_UNLOCK_COMPLETED)
       .pipe(filter((message) => !isExternalMessage(message)))
@@ -57,8 +62,19 @@ export default class CommandsBackground {
       });
 
     if (chrome && chrome.commands) {
-      chrome.commands.onCommand.addListener(async (command: string) => {
-        await this.processCommand(command);
+      chrome.commands.onCommand.addListener(async (command: string, tab?: chrome.tabs.Tab) => {
+        if (
+          [
+            ExtensionCommand.AutofillLogin,
+            ExtensionCommand.AutofillCard,
+            ExtensionCommand.AutofillIdentity,
+          ].includes(command as typeof ExtensionCommand.AutofillLogin) &&
+          this.authStatus != null &&
+          this.authStatus < AuthenticationStatus.Unlocked
+        ) {
+          void SidePanelMode.reveal(tab?.windowId);
+        }
+        await this.processCommand(command, tab ? { tab } : undefined);
       });
     }
   }

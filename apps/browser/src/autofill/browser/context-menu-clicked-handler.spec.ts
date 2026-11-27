@@ -1,5 +1,5 @@
 import { mock, MockProxy } from "jest-mock-extended";
-import { of } from "rxjs";
+import { BehaviorSubject, of } from "rxjs";
 
 import { AuthService } from "@bitwarden/common/auth/abstractions/auth.service";
 import { UserVerificationService } from "@bitwarden/common/auth/abstractions/user-verification/user-verification.service.abstraction";
@@ -26,6 +26,7 @@ import { CipherView } from "@bitwarden/common/vault/models/view/cipher.view";
 
 import { BrowserApi } from "../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../platform/browser/browser-popup-utils";
+import { SidePanelMode } from "../../platform/side-panel/side-panel-mode";
 import AutofillPageDetails from "../models/autofill-page-details";
 import { AutofillTriageService } from "../services/abstractions/autofill-triage.service";
 import { CipherUse, FillCipherPolicy } from "../services/abstractions/fill-cipher-policy";
@@ -110,6 +111,7 @@ describe("ContextMenuClickedHandler", () => {
     autofill = jest.fn<Promise<void>, [tab: chrome.tabs.Tab, cipher: CipherView]>();
     collectAutofillTriage = jest.fn<ReturnType<CollectAutofillTriageAction>, [number, number?]>();
     authService = mock();
+    authService.activeAccountStatus$ = new BehaviorSubject(AuthenticationStatus.Unlocked);
     fillCipherPolicy = mock();
     accountService = mockAccountServiceWith(mockUserId as UserId);
     totpService = mock();
@@ -139,6 +141,25 @@ describe("ContextMenuClickedHandler", () => {
   afterEach(() => jest.resetAllMocks());
 
   describe("run", () => {
+    it("reveals a locked vault at the context-menu event before asynchronous cipher lookup", async () => {
+      (authService.activeAccountStatus$ as BehaviorSubject<AuthenticationStatus>).next(
+        AuthenticationStatus.Locked,
+      );
+      const reveal = jest.spyOn(SidePanelMode, "reveal").mockResolvedValue();
+      const cipher = jest.spyOn(sut, "cipherAction").mockResolvedValue();
+      try {
+        const pending = sut.run(createData("unlock", AUTOFILL_ID), {
+          id: 3,
+          windowId: 7,
+        } as chrome.tabs.Tab);
+        expect(reveal).toHaveBeenCalledWith(7);
+        expect(cipher).toHaveBeenCalled();
+        await pending;
+      } finally {
+        reveal.mockRestore();
+        cipher.mockRestore();
+      }
+    });
     beforeEach(() => {
       authService.getAuthStatus.mockResolvedValue(AuthenticationStatus.Unlocked);
       userVerificationService.hasMasterPassword.mockResolvedValue(false);

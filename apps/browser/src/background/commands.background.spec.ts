@@ -1,5 +1,5 @@
 import { mock, MockProxy } from "jest-mock-extended";
-import { of, Subject } from "rxjs";
+import { BehaviorSubject, of, Subject } from "rxjs";
 
 import { AccountService } from "@bitwarden/common/auth/abstractions/account.service";
 import { AuthService } from "@bitwarden/common/auth/abstractions/auth.service";
@@ -24,6 +24,7 @@ import { AutofillOrchestrator } from "../autofill/orchestration";
 import { createChromeTabMock } from "../autofill/spec/autofill-mocks";
 import { crossContextBoundary, flushPromises } from "../autofill/spec/testing-utils";
 import { BrowserApi } from "../platform/browser/browser-api";
+import { SidePanelMode } from "../platform/side-panel/side-panel-mode";
 
 import CommandsBackground from "./commands.background";
 import MainBackground from "./main.background";
@@ -68,6 +69,7 @@ describe("CommandsBackground", () => {
       configurable: true,
     });
     authService = mock<AuthService>();
+    authService.activeAccountStatus$ = new BehaviorSubject(AuthenticationStatus.Unlocked);
     authService.getAuthStatus.mockResolvedValue(AuthenticationStatus.Unlocked);
     intraprocessMessageSender = new IntraprocessMessageSender();
     externalMessages = new Subject<Message<Record<string, unknown>>>();
@@ -94,6 +96,49 @@ describe("CommandsBackground", () => {
   afterEach(() => {
     getTabFromCurrentWindowIdSpy.mockRestore();
     jest.clearAllMocks();
+  });
+
+  it.each([
+    ExtensionCommand.AutofillLogin,
+    ExtensionCommand.AutofillCard,
+    ExtensionCommand.AutofillIdentity,
+  ])(
+    "starts the panel at the locked %s shortcut boundary with the invoking tab",
+    async (command) => {
+      (authService.activeAccountStatus$ as BehaviorSubject<AuthenticationStatus>).next(
+        AuthenticationStatus.Locked,
+      );
+      const reveal = jest.spyOn(SidePanelMode, "reveal").mockResolvedValue();
+      const process = jest
+        .spyOn(commandsBackground as any, "processCommand")
+        .mockResolvedValue(undefined);
+      try {
+        const listener = jest.mocked(chrome.commands.onCommand.addListener).mock.calls[0][0];
+        listener(command, senderTab);
+        expect(reveal).toHaveBeenCalledWith(senderTab.windowId);
+        expect(process).toHaveBeenCalledWith(command, { tab: senderTab });
+        expect(getTabFromCurrentWindowIdSpy).not.toHaveBeenCalled();
+      } finally {
+        reveal.mockRestore();
+        process.mockRestore();
+      }
+    },
+  );
+
+  it("does not reveal the panel when a shortcut can fill the unlocked vault directly", () => {
+    const reveal = jest.spyOn(SidePanelMode, "reveal").mockResolvedValue();
+    const process = jest
+      .spyOn(commandsBackground as any, "processCommand")
+      .mockResolvedValue(undefined);
+    try {
+      jest
+        .mocked(chrome.commands.onCommand.addListener)
+        .mock.calls[0][0](ExtensionCommand.AutofillLogin, senderTab);
+      expect(reveal).not.toHaveBeenCalled();
+    } finally {
+      reveal.mockRestore();
+      process.mockRestore();
+    }
   });
 
   describe("unlockCompleted", () => {

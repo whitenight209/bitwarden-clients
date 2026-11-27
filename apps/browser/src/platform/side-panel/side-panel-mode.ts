@@ -116,7 +116,11 @@ export class SidePanelMode {
   }
 
   static inPanel(win: Window): boolean {
-    return new URL(win.location.href).searchParams.get("uilocation") === "sidepanel";
+    try {
+      return new URL(win.location.href).searchParams.get("uilocation") === "sidepanel";
+    } catch {
+      return false;
+    }
   }
 
   static isVirtualWindow(windowId: number): boolean {
@@ -140,21 +144,37 @@ export class SidePanelMode {
     return url.href;
   }
 
+  static isUiUrl(path: string): boolean {
+    try {
+      SidePanelMode.panelUrl(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Start at the event boundary, before authentication, IPC or tab queries consume the click. */
+  static reveal(windowId = SidePanelMode.lastWindowId): Promise<void> | undefined {
+    if (!SidePanelMode.enabled || windowId == null || windowId < 0) {
+      return;
+    }
+    // Requests without a usable gesture remain queued and are delivered on the next icon click.
+    return chrome.sidePanel.open({ windowId }).catch((): void => {});
+  }
+
   /** Returns null only when the mode is off. A queued request never falls back to a popout. */
   static async open(
     path = "popup/index.html",
     options: PanelOpenOptions = {},
   ): Promise<chrome.windows.Window | null> {
     // Dispatch before storage/IPC awaits when the event already supplied the owning window.
-    const windowId = options.senderWindowId ?? SidePanelMode.lastWindowId;
-    const opening =
-      SidePanelMode.enabled && windowId != null && windowId >= 0
-        ? chrome.sidePanel.open({ windowId }).catch((): void => {})
-        : undefined;
+    let opening = SidePanelMode.reveal(options.senderWindowId);
     await SidePanelMode.ready();
     if (!SidePanelMode.enabled) {
       return null;
     }
+    // A cold foreground may not have loaded the preference or owning window at entry.
+    opening ??= SidePanelMode.reveal(options.senderWindowId);
     const url = SidePanelMode.panelUrl(path, options.singleActionKey);
     const ownedOptions = {
       ...options,
@@ -339,7 +359,7 @@ export class SidePanelMode {
   }
 
   private static async configure(enabled: boolean): Promise<void> {
-    await chrome.sidePanel.setOptions({ path: SIDE_PANEL_PATH, enabled: true });
+    await chrome.sidePanel.setOptions({ path: SIDE_PANEL_PATH, enabled });
     await chrome.action.setPopup({ popup: enabled ? "" : "popup/index.html" });
     await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: enabled });
     if (enabled) {

@@ -51,6 +51,7 @@ import { GeneratedCredential, GeneratorHistoryService } from "@bitwarden/generat
 
 import { BrowserApi } from "../../platform/browser/browser-api";
 import { BrowserPlatformUtilsService } from "../../platform/services/platform-utils/browser-platform-utils.service";
+import { SidePanelMode } from "../../platform/side-panel/side-panel-mode";
 import { AutofillOutcome } from "../enums/autofill-outcome.enum";
 import {
   AutofillOverlayElement,
@@ -3505,6 +3506,90 @@ describe("OverlayBackground", () => {
   });
 
   describe("handle extension onMessage", () => {
+    it("reveals the native panel before running the inline unlock handler and keeps the unlock retry", async () => {
+      const sender = {
+        id: chrome.runtime.id,
+        tab: createChromeTabMock({ id: 1, windowId: 7 }),
+        frameId: 3,
+        documentId: "inline-menu-container",
+      };
+      const port = createPortSpyMock(AutofillOverlayPort.ListMessageConnector);
+      port.sender = sender;
+      overlayBackground["inlineMenuListMessageConnectorPort"] = port;
+      portKeyForTabSpy[1] = "unlock-key";
+      const order: string[] = [];
+      const reveal = jest.spyOn(SidePanelMode, "reveal").mockImplementation(() => {
+        order.push("reveal");
+        return Promise.resolve();
+      });
+      openUnlockPopoutSpy.mockImplementation(() => {
+        order.push("unlock");
+      });
+      const respond = jest.fn();
+      try {
+        overlayBackground["handleExtensionMessage"](
+          {
+            command: "inlineMenuUserNavigation",
+            portName: port.name,
+            navigation: { command: "unlockVault", portKey: "unlock-key" },
+          },
+          sender,
+          respond,
+        );
+        expect(order).toEqual(["reveal", "unlock"]);
+        expect(reveal).toHaveBeenCalledWith(7);
+        expect(openUnlockPopoutSpy).toHaveBeenCalledWith(sender.tab, expect.any(Function));
+        expect(respond).toHaveBeenCalledWith({ handled: true });
+        await flushPromises();
+      } finally {
+        reveal.mockRestore();
+      }
+    });
+
+    it.each(["nonce", "document", "frame", "tab", "command"])(
+      "rejects an inline UI message with a different %s",
+      (mismatch) => {
+        const sender = {
+          id: chrome.runtime.id,
+          tab: createChromeTabMock({ id: 1, windowId: 7 }),
+          frameId: 3,
+          documentId: "container",
+        };
+        const port = createPortSpyMock(AutofillOverlayPort.ListMessageConnector);
+        port.sender = { ...sender };
+        overlayBackground["inlineMenuListMessageConnectorPort"] = port;
+        portKeyForTabSpy[1] = "key";
+        if (mismatch === "document") {
+          sender.documentId = "foreign";
+        }
+        if (mismatch === "frame") {
+          sender.frameId = 4;
+        }
+        if (mismatch === "tab") {
+          sender.tab = createChromeTabMock({ id: 2 });
+        }
+        const reveal = jest.spyOn(SidePanelMode, "reveal").mockResolvedValue();
+        try {
+          overlayBackground["handleExtensionMessage"](
+            {
+              command: "inlineMenuUserNavigation",
+              portName: port.name,
+              navigation: {
+                command: mismatch === "command" ? "fillAutofillInlineMenuCipher" : "unlockVault",
+                portKey: mismatch === "nonce" ? "wrong" : "key",
+              },
+            },
+            sender,
+            jest.fn(),
+          );
+          expect(reveal).not.toHaveBeenCalled();
+          expect(openUnlockPopoutSpy).not.toHaveBeenCalled();
+        } finally {
+          reveal.mockRestore();
+        }
+      },
+    );
+
     it("will return early if the message command is not present within the extensionMessageHandlers", () => {
       const message = {
         command: "not-a-command",

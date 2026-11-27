@@ -155,6 +155,36 @@ describe("AutofillInlineMenuContainer", () => {
       expect(port.postMessage).toHaveBeenCalledWith(message);
     });
 
+    it.each(["unlockVault", "viewSelectedCipher", "addNewVaultItem"])(
+      "sends %s directly to the worker instead of deferring the click through the port",
+      async (command) => {
+        jest
+          .spyOn(chrome.runtime, "sendMessage")
+          .mockImplementationOnce(async () => ({ handled: true }));
+        const message = { command, portKey, token: autofillInlineMenuContainer["token"] };
+        postWindowMessage(message, "null", iframe.contentWindow as any);
+        expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+          command: "inlineMenuUserNavigation",
+          navigation: message,
+          portName: port.name,
+        });
+        await Promise.resolve();
+        expect(port.postMessage).not.toHaveBeenCalled();
+      },
+    );
+
+    it("retains the legacy port path if the direct bridge is unavailable", async () => {
+      jest.spyOn(chrome.runtime, "sendMessage").mockImplementationOnce(async () => undefined);
+      const message = {
+        command: "unlockVault",
+        portKey,
+        token: autofillInlineMenuContainer["token"],
+      };
+      postWindowMessage(message, "null", iframe.contentWindow as any);
+      await Promise.resolve();
+      expect(port.postMessage).toHaveBeenCalledWith(message);
+    });
+
     it("posts a message to the inline menu iframe from the parent", () => {
       const message = { command: "checkInlineMenuButtonFocused", portKey };
 

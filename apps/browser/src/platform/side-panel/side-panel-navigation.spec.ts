@@ -5,7 +5,68 @@ import { SidePanelMode } from "./side-panel-mode";
 
 describe("side panel navigation adapters", () => {
   const virtualId = -1_000_123;
+  beforeEach(() => {
+    jest
+      .spyOn(chrome.runtime, "getURL")
+      .mockImplementation((path) => "chrome-extension://test/" + path.replace(/^\//, ""));
+  });
   afterEach(() => jest.restoreAllMocks());
+
+  test.each([
+    "#/lock",
+    "#/login",
+    "#/sso?code=abc&state=def",
+    "#/2fa",
+    "#/fido2?sessionId=one",
+    "#/http-authentication?sessionId=one",
+    "#/view-cipher?cipherId=one",
+    "#/edit-cipher?type=1",
+    "#/import",
+    "#/autofill-triage",
+    "#/at-risk-passwords",
+    "#/custom-updates",
+  ])("routes existing window entrypoint %s through the shared panel boundary", async (route) => {
+    jest.spyOn(SidePanelMode, "open").mockResolvedValue({ id: virtualId } as chrome.windows.Window);
+    const create = jest.spyOn(chrome.windows, "create");
+    const result = await BrowserApi.createWindow({
+      url: `popup/index.html${route}`,
+      type: "popup",
+    });
+    expect(result.id).toBe(virtualId);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  test("external websites still open in tabs when panel mode is ON", async () => {
+    const open = jest
+      .spyOn(SidePanelMode, "open")
+      .mockResolvedValue({ id: virtualId } as chrome.windows.Window);
+    const previous = chrome.tabs.create;
+    const create = jest.fn((_options, callback?) => callback?.({ id: 42 }));
+    chrome.tabs.create = create;
+    try {
+      expect((await BrowserApi.createNewTab("https://example.com/login")).id).toBe(42);
+      expect(open).not.toHaveBeenCalled();
+      expect(create).toHaveBeenCalledWith(
+        { url: "https://example.com/login", active: true },
+        expect.any(Function),
+      );
+    } finally {
+      chrome.tabs.create = previous;
+    }
+  });
+
+  test("OFF preserves native window creation for extension UI", async () => {
+    jest.spyOn(SidePanelMode, "open").mockResolvedValue(null);
+    const create = jest
+      .spyOn(chrome.windows, "create")
+      .mockImplementation((_options, callback?) => {
+        callback?.({ id: 42 } as chrome.windows.Window);
+        return undefined;
+      });
+    const options = { url: "popup/index.html#/lock", type: "popup" as const };
+    expect((await BrowserApi.createWindow(options)).id).toBe(42);
+    expect(create).toHaveBeenCalledWith(options, expect.any(Function));
+  });
 
   test("existing popout entrypoints delegate without creating a Chrome window", async () => {
     const opened = jest

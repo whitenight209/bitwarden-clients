@@ -1,6 +1,7 @@
 import { createChromeTabMock } from "../../../autofill/spec/autofill-mocks";
 import { BrowserApi } from "../../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../../platform/browser/browser-popup-utils";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
 
 import {
   AuthPopoutType,
@@ -32,6 +33,28 @@ describe("AuthPopoutWindow", () => {
 
     beforeEach(() => {
       senderTab = { windowId: 1 } as chrome.tabs.Tab;
+    });
+
+    it("starts opening the unlock panel before asynchronous tab cleanup consumes the click", async () => {
+      const openPanel = jest
+        .spyOn(SidePanelMode, "open")
+        .mockResolvedValueOnce({ id: -1_000_001 } as chrome.windows.Window);
+      const tabs = jest.spyOn(BrowserApi, "tabsQuery");
+      const opened = jest.fn();
+      try {
+        const pending = openUnlockPopout(senderTab, opened);
+        expect(openPanel).toHaveBeenCalledWith("popup/index.html#/lock", {
+          singleActionKey: AuthPopoutType.unlockExtension,
+          senderWindowId: 1,
+        });
+        expect(tabs).not.toHaveBeenCalled();
+        await pending;
+        expect(openPopoutSpy).not.toHaveBeenCalled();
+        expect(opened).toHaveBeenCalledTimes(1);
+        expect(sendMessageDataSpy).toHaveBeenCalledWith(senderTab, "bgUnlockPopoutOpened", {});
+      } finally {
+        openPanel.mockRestore();
+      }
     });
 
     it("opens a single action popup that allows the user to unlock the extension and sends a `bgUnlockPopoutOpened` message", async () => {

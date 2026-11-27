@@ -4,6 +4,7 @@ import { CipherType } from "@bitwarden/common/vault/enums";
 
 import { BrowserApi } from "../../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../../platform/browser/browser-popup-utils";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
 
 const VaultPopoutType = {
   viewVaultItem: "vault_viewVaultItem",
@@ -121,6 +122,9 @@ async function openAddEditVaultItemPopout(
     addEditCipherUrl += formatQueryString("fillAfterSave", "true");
   }
 
+  if (await SidePanelMode.open(addEditCipherUrl, { singleActionKey, senderWindowId: windowId })) {
+    return;
+  }
   const extensionUrl = chrome.runtime.getURL("popup/index.html");
   const existingPopupTabs = await BrowserApi.tabsQuery({ url: `${extensionUrl}*` });
   const existingPopup = existingPopupTabs.find((tab) =>
