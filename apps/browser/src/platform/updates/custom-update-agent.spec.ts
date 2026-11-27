@@ -1,6 +1,8 @@
-import { connectUpdateView } from "./custom-update-agent";
+import { connectUpdateView, customUpdateOperation } from "./custom-update-agent";
 
 describe("update view coordination", () => {
+  let broadcast: (message: unknown, sender: chrome.runtime.MessageSender) => void;
+  let dispose: () => void;
   let receive: (message: unknown) => void;
   let disconnected: () => void;
   let postMessage: jest.Mock;
@@ -13,6 +15,13 @@ describe("update view coordination", () => {
       configurable: true,
       value: {
         runtime: {
+          id: "test",
+          onMessage: {
+            addListener: (listener: typeof broadcast) => {
+              broadcast = listener;
+            },
+            removeListener: jest.fn(),
+          },
           connect: jest.fn(() => ({
             postMessage,
             disconnect,
@@ -36,11 +45,13 @@ describe("update view coordination", () => {
   });
 
   afterEach(() => {
+    dispose?.();
     document.body.inert = false;
   });
 
   test("freezes a ready view until the transaction releases it", () => {
-    connectUpdateView();
+    dispose = connectUpdateView();
+    broadcast({ customExtensionUpdatePrepare: "transaction" }, { id: "test" });
     receive({ type: "prepare", id: "transaction" });
     expect(postMessage).toHaveBeenCalledWith({ type: "prepared", id: "transaction", ready: true });
     expect(document.body.inert).toBe(true);
@@ -60,9 +71,17 @@ describe("update view coordination", () => {
     "sso",
   ])("defers an update while %s is active", (route) => {
     window.location.hash = "#/" + route;
-    connectUpdateView();
-    receive({ type: "prepare", id: "busy" });
-    expect(postMessage).toHaveBeenCalledWith({ type: "prepared", id: "busy", ready: false });
+    dispose = connectUpdateView();
+    broadcast({ customExtensionUpdatePrepare: "transaction" }, { id: "test" });
+    receive({ type: "prepare", id: "transaction" });
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "prepared",
+        id: "transaction",
+        ready: false,
+        reason: expect.any(String),
+      }),
+    );
     expect(document.body.inert).toBe(false);
   });
 
@@ -70,27 +89,57 @@ describe("update view coordination", () => {
     const form = document.createElement("form");
     form.className = "ng-dirty";
     document.body.append(form);
-    connectUpdateView();
-    receive({ type: "prepare", id: "dirty" });
-    expect(postMessage).toHaveBeenCalledWith({ type: "prepared", id: "dirty", ready: false });
+    dispose = connectUpdateView();
+    broadcast({ customExtensionUpdatePrepare: "transaction" }, { id: "test" });
+    receive({ type: "prepare", id: "transaction" });
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "prepared",
+        id: "transaction",
+        ready: false,
+        reason: expect.any(String),
+      }),
+    );
   });
 
   test.each(["appearance", "custom-updates"])("allows persisted preferences on %s", (route) => {
     window.location.hash = "#/" + route;
     document.body.innerHTML = '<form class="ng-dirty"></form>';
-    connectUpdateView();
-    receive({ type: "prepare", id: "settings" });
-    expect(postMessage).toHaveBeenCalledWith({ type: "prepared", id: "settings", ready: true });
+    dispose = connectUpdateView();
+    broadcast({ customExtensionUpdatePrepare: "transaction" }, { id: "test" });
+    receive({ type: "prepare", id: "transaction" });
+    expect(postMessage).toHaveBeenCalledWith({ type: "prepared", id: "transaction", ready: true });
   });
 
-  test("releases input when the worker disconnects or the view is destroyed", () => {
-    const dispose = connectUpdateView();
-    receive({ type: "prepare", id: "first" });
+  test("opens no connection when a view opens or when ordinary operations run", async () => {
+    dispose = connectUpdateView();
+    chrome.runtime.sendMessage = jest.fn(async () => ({
+      status: "available",
+    })) as typeof chrome.runtime.sendMessage;
+    await customUpdateOperation("state");
+    expect(chrome.runtime.connect).not.toHaveBeenCalled();
+  });
+
+  test("releases input when the transaction disconnects and accepts the next transaction", () => {
+    dispose = connectUpdateView();
+    broadcast({ customExtensionUpdatePrepare: "transaction" }, { id: "test" });
+    receive({ type: "prepare", id: "transaction" });
+    expect(document.body.inert).toBe(true);
     disconnected();
     expect(document.body.inert).toBe(false);
-    receive({ type: "prepare", id: "second" });
+    broadcast({ customExtensionUpdatePrepare: "retry" }, { id: "test" });
+    receive({ type: "prepare", id: "retry" });
+    expect(document.body.inert).toBe(true);
     dispose();
     expect(document.body.inert).toBe(false);
-    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test("ignores broadcasts from other extensions and mismatched transactions", () => {
+    dispose = connectUpdateView();
+    broadcast({ customExtensionUpdatePrepare: "transaction" }, { id: "other" });
+    expect(chrome.runtime.connect).not.toHaveBeenCalled();
+    broadcast({ customExtensionUpdatePrepare: "transaction" }, { id: "test" });
+    receive({ type: "prepare", id: "other" });
+    expect(postMessage).not.toHaveBeenCalled();
   });
 });

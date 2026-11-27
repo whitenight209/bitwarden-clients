@@ -24,6 +24,7 @@ import { LockService, LockSource } from "@bitwarden/unlock";
 // FIXME (PM-22628): Popup imports are forbidden in background
 // eslint-disable-next-line no-restricted-imports
 import {
+  AuthPopoutType,
   closeUnlockPopout,
   openSsoAuthResultPopout,
   openTwoFactorAuthWebAuthnPopout,
@@ -53,6 +54,7 @@ import BrowserPopupUtils from "../platform/browser/browser-popup-utils";
 import { BrowserEnvironmentService } from "../platform/services/browser-environment.service";
 import BrowserInitialInstallService from "../platform/services/browser-initial-install.service";
 import { BrowserPlatformUtilsService } from "../platform/services/platform-utils/browser-platform-utils.service";
+import { SidePanelMode } from "../platform/side-panel/side-panel-mode";
 import { isValidVaultReferrer } from "../platform/utils/valid-vault-referrer";
 import { getWebExtSender } from "../platform/utils/web-ext-sender";
 import { GET_CIPHER_LIST_VIEWS } from "../vault/services/foreground-cipher.service";
@@ -437,6 +439,9 @@ export default class RuntimeBackground {
       case "loggedIn":
       case "unlocked": {
         let item: LockedVaultPendingNotificationsData;
+
+        // A successful unlock completes its panel request even when there is no autofill retry.
+        await SidePanelMode.closeKey(AuthPopoutType.unlockExtension);
 
         if (msg.command === "loggedIn") {
           await this.main.initOverlayAndTabsBackground();

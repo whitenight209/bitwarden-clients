@@ -49,6 +49,7 @@ import { BrowserApi } from "../platform/browser/browser-api";
 import BrowserPopupUtils from "../platform/browser/browser-popup-utils";
 import { BrowserEnvironmentService } from "../platform/services/browser-environment.service";
 import { BrowserPlatformUtilsService } from "../platform/services/platform-utils/browser-platform-utils.service";
+import { SidePanelMode } from "../platform/side-panel/side-panel-mode";
 
 import MainBackground from "./main.background";
 import RuntimeBackground from "./runtime.background";
@@ -883,8 +884,10 @@ describe("RuntimeBackground locked vault pending notifications", () => {
     });
   });
 
-  it("dispatches no retry when none was queued", async () => {
+  it("completes the unlock panel request even when no autofill retry was queued", async () => {
+    const close = jest.spyOn(SidePanelMode, "closeKey").mockResolvedValue(true);
     await enqueue({ command: "unlocked" });
+    expect(close).toHaveBeenCalledWith("auth_unlockExtension");
 
     expect(intraprocessMessageSender.send).not.toHaveBeenCalledWith(
       RETRY_WHEN_UNLOCK_COMPLETED,

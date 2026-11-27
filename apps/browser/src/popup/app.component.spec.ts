@@ -126,7 +126,10 @@ describe("AppComponent (browser popup)", () => {
 
     // Avoid touching the real chrome.runtime API during ngOnInit.
     (global as any).chrome = {
-      runtime: { connect: jest.fn() },
+      runtime: {
+        connect: jest.fn(),
+        onMessage: { addListener: jest.fn(), removeListener: jest.fn() },
+      },
     };
     (window as any).onmousedown = undefined;
   });

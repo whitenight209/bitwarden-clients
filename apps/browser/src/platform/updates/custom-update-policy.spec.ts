@@ -2,7 +2,11 @@ import { webcrypto } from "node:crypto";
 
 import type { CustomUpdateAgent as Agent } from "./custom-update-agent";
 
-jest.mock("./update-store", () => ({ getUpdateState: jest.fn(), setUpdateState: jest.fn() }));
+jest.mock("./update-store", () => ({
+  getUpdateState: jest.fn(),
+  setUpdateState: jest.fn(),
+  finishUpdate: jest.fn(),
+}));
 jest.mock("./update-source", () => ({ findRemoteUpdate: jest.fn(), fetchUpdateAsset: jest.fn() }));
 jest.mock("./update-files", () => ({
   ...jest.requireActual("./update-files"),
@@ -39,6 +43,7 @@ let saved: jest.Mock;
 let reload: jest.Mock;
 let clearAlarm: jest.Mock;
 let createAlarm: jest.Mock;
+let connect: (port: chrome.runtime.Port) => void;
 let message: (
   body: unknown,
   sender: chrome.runtime.MessageSender,
@@ -59,6 +64,13 @@ beforeEach(async () => {
     } else {
       values.set(key, value);
     }
+  });
+  state.finishUpdate.mockImplementation(async (journal, outcome) => {
+    values.delete("journal");
+    values.delete("backups");
+    values.set("history", [
+      { at: NOW, fromVersion: journal.fromVersion, toVersion: journal.toVersion, outcome },
+    ]);
   });
   source = (await import("./update-source")) as typeof source;
   source.findRemoteUpdate.mockResolvedValue({
@@ -100,7 +112,12 @@ beforeEach(async () => {
             message = listener;
           },
         },
-        onConnect: { addListener: jest.fn() },
+        onConnect: {
+          addListener: (listener: typeof connect) => {
+            connect = listener;
+          },
+        },
+        sendMessage: jest.fn().mockResolvedValue(undefined),
       },
       management: { getSelf: jest.fn().mockResolvedValue({ installType: "development" }) },
       storage: { local: { set: saved } },
@@ -215,4 +232,119 @@ test("unconfigured builds never query GitHub on unlock", async () => {
   (fetch as jest.Mock).mockResolvedValue({ ok: false });
   await agent.checkAfterUnlock();
   expect(source.findRemoteUpdate).not.toHaveBeenCalled();
+});
+
+function screen(documentId: string, ready = true, reason?: string) {
+  let receive!: (body: any) => void;
+  const closed: Array<() => void> = [];
+  return {
+    name: "customExtensionUpdateView",
+    sender: {
+      id: "test",
+      url: "chrome-extension://test/popup/index.html?uilocation=sidepanel",
+      documentId,
+    },
+    onMessage: {
+      addListener: (listener: typeof receive) => {
+        receive = listener;
+      },
+    },
+    onDisconnect: {
+      addListener: (listener: () => void) => {
+        closed.push(listener);
+      },
+    },
+    postMessage: jest.fn((body) => {
+      if (body.type === "prepare") {
+        receive({ type: "prepared", id: body.id, ready, reason });
+      }
+    }),
+    disconnect: jest.fn(() => closed.forEach((listener) => listener())),
+  } as unknown as chrome.runtime.Port;
+}
+
+test("apply prepares an already-open side panel without any permanent update port", async () => {
+  values.set("directory", { queryPermission: async () => "granted" });
+  const panel = screen("panel");
+  jest.mocked(chrome.runtime.getContexts).mockResolvedValue([
+    {
+      documentId: "panel",
+      documentUrl: "chrome-extension://test/popup/index.html?uilocation=sidepanel",
+    },
+  ] as never);
+  jest.mocked(chrome.runtime.sendMessage).mockImplementation(async () => {
+    connect(panel);
+  });
+  const result = await send("apply");
+  expect(result.error).toBeUndefined();
+  expect(files.applyUpdateFiles).toHaveBeenCalledTimes(1);
+  expect(panel.postMessage).toHaveBeenCalledWith({ type: "release" });
+  expect(panel.disconnect).toHaveBeenCalledTimes(1);
+});
+
+test("every open document must prepare, including a dirty form in another window", async () => {
+  values.set("directory", { queryPermission: async () => "granted" });
+  const panels = [screen("one"), screen("two", false, "Save the edited form.")];
+  jest.mocked(chrome.runtime.getContexts).mockResolvedValue(
+    ["one", "two"].map((documentId) => ({
+      documentId,
+      documentUrl: "chrome-extension://test/popup/index.html",
+    })) as never,
+  );
+  jest.mocked(chrome.runtime.sendMessage).mockImplementation(async () => {
+    panels.forEach(connect);
+  });
+  const result = await send("apply");
+  expect(result.status).toBe("waiting");
+  expect(result.error).toBe("Save the edited form.");
+  expect(files.applyUpdateFiles).not.toHaveBeenCalled();
+  expect(reload).not.toHaveBeenCalled();
+  panels.forEach((panel) => expect(panel.postMessage).toHaveBeenCalledWith({ type: "release" }));
+});
+
+test("access revoked after connecting prevents writes without discarding the saved handle", async () => {
+  const folder = { queryPermission: async () => "prompt" };
+  values.set("directory", folder);
+  const result = await send("apply");
+  expect(result.folderPermission).toBe("prompt");
+  expect(result.status).toBe("waiting");
+  expect(values.get("directory")).toBe(folder);
+  expect(files.applyUpdateFiles).not.toHaveBeenCalled();
+});
+
+test("only a healthy new version removes recovery bytes and records completion", async () => {
+  const journal = {
+    phase: "pendingReload",
+    fromVersion: "1.0.0.0",
+    toVersion: "1.0.0.1",
+    target: encode(inventory("1.0.0.1")),
+    backup: [{ path: "old.js", bytes: new Uint8Array([1]) }],
+  };
+  values.set("directory", { queryPermission: async () => "granted" });
+  values.set("journal", journal);
+  values.set("backups", [journal]);
+  await agent.initializeBackground();
+  expect(values.get("journal")).toBe(journal);
+  await agent.markHealthy();
+  expect(files.verifyDirectory).toHaveBeenCalledTimes(1);
+  expect(values.has("journal")).toBe(false);
+  expect(values.has("backups")).toBe(false);
+  expect((await send("state")).history).toEqual([
+    { at: NOW, fromVersion: "1.0.0.0", toVersion: "1.0.0.1", outcome: "applied" },
+  ]);
+});
+
+test("failed startup file verification preserves the backup for recovery", async () => {
+  const journal = {
+    phase: "pendingReload",
+    toVersion: "1.0.0.1",
+    target: encode(inventory("1.0.0.1")),
+    backup: ["recovery bytes"],
+  };
+  values.set("directory", { queryPermission: async () => "granted" });
+  values.set("journal", journal);
+  files.verifyDirectory.mockRejectedValueOnce(new Error("File verification failed"));
+  await agent.initializeBackground();
+  await expect(agent.markHealthy()).rejects.toThrow("File verification failed");
+  expect(values.get("journal")).toBe(journal);
 });

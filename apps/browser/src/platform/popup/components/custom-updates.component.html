@@ -19,6 +19,19 @@
             (current.connected ? "customUpdateReconnectFolder" : "customUpdateConnectFolder") | i18n
           }}
         </button>
+        @if (current.connected) {
+          <p>{{ "customUpdatePermissionHelp" | i18n }}</p>
+          <button
+            bitButton
+            type="button"
+            buttonType="secondary"
+            (click)="allowFolderAccess()"
+            [disabled]="busy()"
+            data-testid="allow-update-folder"
+          >
+            {{ "customUpdateAllowFolder" | i18n }}
+          </button>
+        }
         <p>{{ "customUpdateManualHelp" | i18n }}</p>
         <button
           bitButton
@@ -58,6 +71,22 @@
       }
       @if (error() || current.error) {
         <p role="alert" data-testid="custom-update-error">{{ error() || current.error }}</p>
+      }
+      @if (current.history?.length) {
+        <p>{{ "customUpdateHistory" | i18n }}</p>
+        <ul data-testid="custom-update-history">
+          @for (entry of current.history; track $index) {
+            <li>
+              {{ entry.at | date: "medium" }} · {{ entry.fromVersion }} → {{ entry.toVersion }} ·
+              {{
+                (entry.outcome === "applied"
+                  ? "customUpdateHistoryApplied"
+                  : "customUpdateHistoryRestored"
+                ) | i18n
+              }}
+            </li>
+          }
+        </ul>
       }
     </div>
   }

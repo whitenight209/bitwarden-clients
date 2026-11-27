@@ -20,7 +20,7 @@ import {
   verifyDirectory,
 } from "./update-files";
 import { fetchUpdateAsset, findRemoteUpdate } from "./update-source";
-import { getUpdateState, setUpdateState } from "./update-store";
+import { UpdateHistoryEntry, finishUpdate, getUpdateState, setUpdateState } from "./update-store";
 
 export const CUSTOM_UPDATE_STATUS = "customExtensionUpdateStatus";
 export const CUSTOM_UPDATE_PORT = "customExtensionUpdateView";
@@ -33,6 +33,8 @@ export type UpdateCheckResult = { checkedAt: number; availableVersion?: string }
 
 export type CustomUpdateStatus = {
   recoveryAvailable?: boolean;
+  folderPermission?: PermissionState;
+  history?: UpdateHistoryEntry[];
   configured: boolean;
   connected: boolean;
   status:
@@ -54,7 +56,7 @@ export type CustomUpdateStatus = {
 type UpdateView = {
   port: chrome.runtime.Port;
   documentId: string;
-  ready: Map<string, (ready: boolean) => void>;
+  ready: Map<string, (result: { ready: boolean; reason?: string }) => void>;
 };
 
 function internal(sender: chrome.runtime.MessageSender): boolean {
@@ -71,6 +73,11 @@ export class CustomUpdateAgent {
   private static startup?: Promise<void>;
   private static views: UpdateView[] = [];
   private static state: CustomUpdateStatus;
+  private static preparation?: {
+    id: string;
+    expected: Set<string>;
+    connected: (view: UpdateView) => void;
+  };
 
   static initializeBackground(): Promise<void> {
     return (CustomUpdateAgent.startup ??= CustomUpdateAgent.initialize());
@@ -89,10 +96,15 @@ export class CustomUpdateAgent {
         return;
       }
       const operation = async () => {
+        await CustomUpdateAgent.initializeBackground();
         switch (message[MESSAGE]) {
           case "state":
             return {
               ...CustomUpdateAgent.state,
+              folderPermission: await (
+                await getUpdateState<UpdateDirectory>("directory")
+              )?.queryPermission({ mode: "readwrite" }),
+              history: (await getUpdateState<UpdateHistoryEntry[]>("history")) ?? [],
               recoveryAvailable: !!(await getUpdateState("journal")),
             };
           case "check":
@@ -111,8 +123,24 @@ export class CustomUpdateAgent {
               if (!root || !journal) {
                 throw new Error("No interrupted update is available to restore.");
               }
-              await rollbackUpdate(root, journal, (value) => setUpdateState("journal", value));
-              chrome.runtime.reload();
+              if ((await root.queryPermission({ mode: "readwrite" })) !== "granted") {
+                throw new Error(
+                  "Allow access to the saved installation folder before restoring files.",
+                );
+              }
+              const blocked = await CustomUpdateAgent.prepareViews();
+              if (blocked) {
+                await CustomUpdateAgent.publish({ status: "waiting", error: blocked });
+                return;
+              }
+              try {
+                await rollbackUpdate(root, journal, (value) =>
+                  value ? setUpdateState("journal", value) : finishUpdate(journal, "restored"),
+                );
+                chrome.runtime.reload();
+              } finally {
+                CustomUpdateAgent.releaseViews();
+              }
             });
             break;
           default:
@@ -132,18 +160,32 @@ export class CustomUpdateAgent {
       if (port.name !== CUSTOM_UPDATE_PORT || !port.sender?.documentId || !internal(port.sender)) {
         return;
       }
+      const preparation = CustomUpdateAgent.preparation;
+      if (
+        !preparation?.expected.has(port.sender.documentId) ||
+        CustomUpdateAgent.views.some((view) => view.documentId === port.sender!.documentId)
+      ) {
+        port.disconnect();
+        return;
+      }
       const view: UpdateView = { port, documentId: port.sender.documentId, ready: new Map() };
       CustomUpdateAgent.views.push(view);
       port.onMessage.addListener((message) => {
         if (message?.type === "prepared") {
-          view.ready.get(message.id)?.(message.ready === true);
+          view.ready.get(message.id)?.({ ready: message.ready === true, reason: message.reason });
           view.ready.delete(message.id);
         }
       });
       port.onDisconnect.addListener(() => {
         CustomUpdateAgent.views = CustomUpdateAgent.views.filter((item) => item !== view);
-        view.ready.forEach((resolve) => resolve(false));
+        view.ready.forEach((resolve) =>
+          resolve({
+            ready: false,
+            reason: "An extension screen disconnected. Reopen it and apply again.",
+          }),
+        );
       });
+      preparation.connected(view);
     });
     try {
       // Remove the previous periodic updater without scheduling another background task.
@@ -170,6 +212,8 @@ export class CustomUpdateAgent {
       await CustomUpdateAgent.publish({
         configured: true,
         connected: !!root,
+        folderPermission: await root?.queryPermission({ mode: "readwrite" }),
+        history: (await getUpdateState<UpdateHistoryEntry[]>("history")) ?? [],
         checkedAt: checked?.checkedAt,
         availableVersion,
         status: availableVersion ? "available" : "idle",
@@ -179,7 +223,9 @@ export class CustomUpdateAgent {
       await CustomUpdateAgent.publish({ recoveryAvailable: !!journal });
       if (journal?.phase === "applying" && root) {
         if ((await root.queryPermission({ mode: "readwrite" })) === "granted") {
-          await rollbackUpdate(root, journal, (value) => setUpdateState("journal", value));
+          await rollbackUpdate(root, journal, (value) =>
+            value ? setUpdateState("journal", value) : finishUpdate(journal, "restored"),
+          );
           if (journal.fromVersion !== chrome.runtime.getManifest().version) {
             chrome.runtime.reload();
             return;
@@ -187,6 +233,8 @@ export class CustomUpdateAgent {
           await CustomUpdateAgent.publish({
             status: "waiting",
             error: "An interrupted update was restored. Check for updates again.",
+            recoveryAvailable: false,
+            history: (await getUpdateState<UpdateHistoryEntry[]>("history")) ?? [],
           });
         } else {
           await CustomUpdateAgent.publish({
@@ -250,6 +298,7 @@ export class CustomUpdateAgent {
       await setUpdateState("directoryCandidate", null);
       await CustomUpdateAgent.publish({
         connected: true,
+        folderPermission: "granted",
         status: "idle",
         error: undefined,
       });
@@ -277,67 +326,98 @@ export class CustomUpdateAgent {
         ),
       );
       await setUpdateState("highestVersion", journal.toVersion);
-      await setUpdateState("journal", null);
+      await finishUpdate(journal, "applied");
       await CustomUpdateAgent.publish({
         status: "current",
         error: undefined,
         recoveryAvailable: false,
+        history: (await getUpdateState<UpdateHistoryEntry[]>("history")) ?? [],
       });
     }
   }
 
   private static releaseViews(): void {
+    CustomUpdateAgent.preparation = undefined;
     for (const view of CustomUpdateAgent.views) {
       try {
         view.port.postMessage({ type: "release" });
       } catch {
-        /* The view was closed during the update. */
+        // Closed views release their own inert state on disconnect.
+      } finally {
+        try {
+          view.port.disconnect();
+        } catch {
+          /* Already disconnected. */
+        }
       }
     }
+    CustomUpdateAgent.views = [];
   }
 
-  private static async prepareViews(): Promise<boolean> {
+  private static async prepareViews(): Promise<string | undefined> {
     if (SidePanelMode.hasActiveRequests) {
-      return false;
+      return "A side-panel authentication request is still pending. Finish or cancel that request before applying the update.";
     }
-    const contexts = await chrome.runtime.getContexts({});
     const ownPage = chrome.runtime.getURL("popup/index.html");
-    const pages = contexts.filter((context) => context.documentUrl?.startsWith(ownPage));
-    if (
-      pages.some(
-        (page) => !CustomUpdateAgent.views.some((view) => view.documentId === page.documentId),
-      )
-    ) {
-      return false;
-    }
-    const results = await Promise.all(
-      CustomUpdateAgent.views.map(
-        (view) =>
-          new Promise<boolean>((resolve) => {
-            const id = crypto.randomUUID();
-            const timer = setTimeout(() => {
-              view.ready.delete(id);
-              resolve(false);
-            }, 2000);
-            view.ready.set(id, (ready) => {
-              clearTimeout(timer);
-              resolve(ready);
-            });
-            try {
-              view.port.postMessage({ type: "prepare", id });
-            } catch {
-              clearTimeout(timer);
-              view.ready.delete(id);
-              resolve(false);
-            }
-          }),
-      ),
+    const pages = (await chrome.runtime.getContexts({})).filter(
+      (context) => context.documentUrl?.split("?")[0].split("#")[0] === ownPage,
     );
-    const prepared = results.every(Boolean);
-    if (!prepared) {
-      CustomUpdateAgent.releaseViews();
+    if (!pages.length) {
+      return undefined;
     }
-    return prepared;
+    const id = crypto.randomUUID();
+    const results = new Map<string, { ready: boolean; reason?: string }>();
+    let complete!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    CustomUpdateAgent.preparation = {
+      id,
+      expected: new Set(pages.map((page) => page.documentId)),
+      connected: (view) => {
+        view.ready.set(id, (result) => {
+          results.set(view.documentId, result);
+          if (results.size === pages.length) {
+            complete();
+          }
+        });
+        try {
+          view.port.postMessage({ type: "prepare", id });
+        } catch {
+          view.ready.get(id)?.({
+            ready: false,
+            reason: "An extension screen disconnected during update preparation. Try again.",
+          });
+        }
+      },
+    };
+    const timer = setTimeout(complete, 3000);
+    try {
+      // UI listeners create a transaction-only port. No pre-existing connection is required.
+      // sendMessage's single response is deliberately ignored: every document answers separately.
+      void chrome.runtime.sendMessage({ customExtensionUpdatePrepare: id }).catch(() => {});
+      await answered;
+      const current = (await chrome.runtime.getContexts({})).filter(
+        (context) => context.documentUrl?.split("?")[0].split("#")[0] === ownPage,
+      );
+      for (const page of current) {
+        const result = results.get(page.documentId);
+        if (!result?.ready) {
+          CustomUpdateAgent.releaseViews();
+          return (
+            result?.reason ??
+            "An extension screen did not respond to the update request. Reopen that screen and try again."
+          );
+        }
+      }
+      return undefined;
+    } catch (error) {
+      CustomUpdateAgent.releaseViews();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      CustomUpdateAgent.preparation = undefined;
+    }
   }
 
   /** Invoked only by a completed, non-restored unlock; never by opening a view. */
@@ -414,7 +494,8 @@ export class CustomUpdateAgent {
     if (!root || (await root.queryPermission({ mode: "readwrite" })) !== "granted") {
       await CustomUpdateAgent.publish({
         status: "waiting",
-        error: "Reconnect the installation folder to allow this update.",
+        error: "Allow access to the saved installation folder before applying this update.",
+        folderPermission: root ? await root.queryPermission({ mode: "readwrite" }) : undefined,
       });
       return;
     }
@@ -466,18 +547,25 @@ export class CustomUpdateAgent {
       return fetchUpdateAsset(config!, update!, matching.payload);
     }
     const payload = await unpackUpdate(await selectPayload());
-    if (!(await CustomUpdateAgent.prepareViews())) {
+    const blocked = await CustomUpdateAgent.prepareViews();
+    if (blocked) {
       await CustomUpdateAgent.publish({
         status: "waiting",
-        error: "Finish editing or authentication before applying this update.",
+        error: blocked,
       });
       return;
     }
-    await CustomUpdateAgent.publish({ status: "applying" });
     try {
-      await applyUpdateFiles(root, baselineBytes, inventoryBytes, payload, (value) =>
-        setUpdateState("journal", value),
-      );
+      await CustomUpdateAgent.publish({ status: "applying" });
+      let journal: UpdateJournal | undefined;
+      await applyUpdateFiles(root, baselineBytes, inventoryBytes, payload, async (value) => {
+        if (value) {
+          journal = value;
+          await setUpdateState("journal", value);
+        } else if (journal) {
+          await finishUpdate(journal, "restored");
+        }
+      });
       chrome.runtime.reload();
     } finally {
       CustomUpdateAgent.releaseViews();
@@ -485,35 +573,72 @@ export class CustomUpdateAgent {
   }
 }
 
+/** Register once per UI document; ports exist only while an update is being applied. */
 export function connectUpdateView(): () => void {
-  const port = chrome.runtime.connect({ name: CUSTOM_UPDATE_PORT });
-  if (!port?.onMessage) {
-    return () => undefined;
-  }
-  port.onMessage.addListener((message) => {
-    if (message?.type === "prepare") {
-      const busyRoute =
-        /#\/(?:add-cipher|edit-cipher|add-send|edit-send|attachments|import(?:-[a-z-]+)?|fido2|http-authentication|2fa|sso)(?:[/?;]|$)/.test(
-          globalThis.location.href,
-        );
-      const dirty =
-        !!document.querySelector("form.ng-dirty") &&
-        !/#\/(?:appearance|custom-updates)(?:[/?]|$)/.test(globalThis.location.href);
-      const ready = !busyRoute && !dirty;
-      if (ready) {
-        document.body.inert = true;
-      }
-      port.postMessage({ type: "prepared", id: message.id, ready });
-    } else if (message?.type === "release") {
-      document.body.inert = false;
+  let port: chrome.runtime.Port | undefined;
+  const release = () => {
+    document.body.inert = false;
+  };
+  const listener = (message: any, sender: chrome.runtime.MessageSender) => {
+    if (!message?.customExtensionUpdatePrepare || sender.id !== chrome.runtime.id || port) {
+      return;
     }
-  });
-  port.onDisconnect?.addListener(() => {
-    document.body.inert = false;
-  });
+    const transaction = message.customExtensionUpdatePrepare;
+    const connection = chrome.runtime.connect({ name: CUSTOM_UPDATE_PORT });
+    port = connection;
+    connection.onDisconnect.addListener(() => {
+      void chrome.runtime.lastError;
+      if (port === connection) {
+        port = undefined;
+        release();
+      }
+    });
+    connection.onMessage.addListener((message) => {
+      if (message?.type === "release") {
+        release();
+      } else if (message?.type === "prepare" && message.id === transaction) {
+        const busyRoute =
+          /#\/(?:add-cipher|edit-cipher|add-send|edit-send|attachments|import(?:-[a-z-]+)?|fido2|http-authentication|2fa|sso)(?:[/?;]|$)/.test(
+            globalThis.location.href,
+          );
+        const dirty =
+          !!document.querySelector("form.ng-dirty") &&
+          !/#\/(?:appearance|custom-updates)(?:[/?]|$)/.test(globalThis.location.href);
+        const ready = !busyRoute && !dirty;
+        if (ready) {
+          document.body.inert = true;
+        }
+        try {
+          connection.postMessage({
+            type: "prepared",
+            id: message.id,
+            ready,
+            ...(!ready
+              ? {
+                  reason: busyRoute
+                    ? "Finish editing, authentication or import in the other extension screen before applying this update."
+                    : "Save or cancel the edited form before applying this update.",
+                }
+              : {}),
+          });
+        } catch {
+          port = undefined;
+          release();
+        }
+      }
+    });
+  };
+  // eslint-disable-next-line no-restricted-syntax -- This listener belongs to the UI document lifetime.
+  chrome.runtime.onMessage.addListener(listener);
   return () => {
-    document.body.inert = false;
-    port.disconnect();
+    chrome.runtime.onMessage.removeListener(listener);
+    release();
+    try {
+      port?.disconnect();
+    } catch {
+      /* Already disconnected. */
+    }
+    port = undefined;
   };
 }
 

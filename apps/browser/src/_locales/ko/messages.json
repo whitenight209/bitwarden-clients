@@ -9485,6 +9485,21 @@
   "customUpdateReconnectFolder": {
     "message": "설치 폴더 다시 연결"
   },
+  "customUpdateAllowFolder": {
+    "message": "저장된 폴더 접근 허용"
+  },
+  "customUpdatePermissionHelp": {
+    "message": "폴더 접근 권한은 Chrome이 관리합니다. 권한 창에 ‘방문할 때마다 허용’이 나오면 선택하세요. 직접 철회하기 전까지 유지됩니다. 확장 화면에서는 이 선택지가 제공되지 않을 수 있습니다."
+  },
+  "customUpdateHistory": {
+    "message": "업데이트 이력"
+  },
+  "customUpdateHistoryApplied": {
+    "message": "적용 완료"
+  },
+  "customUpdateHistoryRestored": {
+    "message": "이전 버전 복구"
+  },
   "customUpdateManualHelp": {
     "message": "잠금 해제 시 마지막 확인에서 24시간이 지났으면 새 버전을 확인합니다. 업데이트 적용 버튼을 눌렀을 때만 설치합니다."
   },

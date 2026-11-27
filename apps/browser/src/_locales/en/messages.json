@@ -9529,6 +9529,21 @@
   "customUpdateReconnectFolder": {
     "message": "Reconnect installation folder"
   },
+  "customUpdateAllowFolder": {
+    "message": "Allow access to saved folder"
+  },
+  "customUpdatePermissionHelp": {
+    "message": "Folder access is remembered by Chrome. If Chrome offers “Allow on every visit”, select it to keep access until you revoke it. Some extension screens may not offer this option."
+  },
+  "customUpdateHistory": {
+    "message": "Update history"
+  },
+  "customUpdateHistoryApplied": {
+    "message": "Applied"
+  },
+  "customUpdateHistoryRestored": {
+    "message": "Restored previous version"
+  },
   "customUpdateManualHelp": {
     "message": "When you unlock, new versions are checked if 24 hours have passed since the last successful check. Updates are installed only when you click Apply update."
   },

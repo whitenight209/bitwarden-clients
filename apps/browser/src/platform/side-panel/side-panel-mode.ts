@@ -1,6 +1,8 @@
 /* eslint-disable no-restricted-syntax -- Chrome-only broker: supported() excludes Safari; background and panel listeners have separate document lifetimes. */
 import { BehaviorSubject, Subject } from "rxjs";
 
+import { ForegroundPort } from "../browser/foreground-port";
+
 import { focusSidePanelUnlock } from "./side-panel-unlock-focus";
 
 export const SIDE_PANEL_MODE_KEY = "customSidePanelModeEnabled";
@@ -45,7 +47,7 @@ export class SidePanelMode {
   private static requests: PanelRequest[] = [];
   private static panels: PanelConnection[] = [];
   private static configuring: Promise<void> = Promise.resolve();
-  private static viewPort?: chrome.runtime.Port;
+  private static viewPort?: ForegroundPort;
   private static lastRoutes: Record<number, string> = {};
   private static pendingBadge = false;
   static get hasActiveRequests(): boolean {
@@ -55,7 +57,7 @@ export class SidePanelMode {
     return SidePanelMode.lastWindowId;
   }
   static notifyReady(): void {
-    SidePanelMode.viewPort?.postMessage({ type: "ready" });
+    SidePanelMode.viewPort?.send({ type: "ready" });
   }
   static recordRoute(route: string): void {
     if (
@@ -63,7 +65,7 @@ export class SidePanelMode {
         route,
       )
     ) {
-      SidePanelMode.viewPort?.postMessage({ type: "route", route });
+      SidePanelMode.viewPort?.send({ type: "route", route });
     }
   }
   private static expiryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -450,7 +452,7 @@ export class SidePanelMode {
         for (const panel of SidePanelMode.panels.filter(
           (panel) => panel.windowId === item.windowId,
         )) {
-          panel.port.postMessage({ type: "finished" });
+          SidePanelMode.sendPanel(panel, { type: "finished" });
         }
       }
     }
@@ -502,15 +504,8 @@ export class SidePanelMode {
         }
       }
     });
-    port.onDisconnect.addListener(() => {
-      SidePanelMode.panels = SidePanelMode.panels.filter((item) => item !== connection);
-      for (const request of [...SidePanelMode.requests]) {
-        if (request.documentId === connection.documentId) {
-          SidePanelMode.finish(request.key, true, request.id);
-        }
-      }
-    });
-    port.postMessage({
+    port.onDisconnect.addListener(() => SidePanelMode.dropPanel(connection));
+    SidePanelMode.sendPanel(connection, {
       type: "connected",
       windowId: connection.windowId,
       route: SidePanelMode.requests.some((item) => item.windowId === connection.windowId)
@@ -518,6 +513,23 @@ export class SidePanelMode {
         : SidePanelMode.lastRoutes[connection.windowId],
     });
     SidePanelMode.deliver(connection.windowId);
+  }
+
+  private static dropPanel(connection: PanelConnection): void {
+    SidePanelMode.panels = SidePanelMode.panels.filter((item) => item !== connection);
+    for (const request of [...SidePanelMode.requests]) {
+      if (request.documentId === connection.documentId) {
+        SidePanelMode.finish(request.key, true, request.id);
+      }
+    }
+  }
+
+  private static sendPanel(connection: PanelConnection, message: unknown): void {
+    try {
+      connection.port.postMessage(message);
+    } catch {
+      SidePanelMode.dropPanel(connection);
+    }
   }
 
   private static deliver(windowId: number): void {
@@ -529,7 +541,7 @@ export class SidePanelMode {
     const preferred = connections.find((item) => item.tabId < 0) ?? connections[0];
     if (preferred) {
       request.documentId = preferred.documentId;
-      preferred.port.postMessage({
+      SidePanelMode.sendPanel(preferred, {
         type: "navigate",
         url: request.url,
         requestId: request.id,
@@ -555,51 +567,67 @@ export class SidePanelMode {
     if (!SidePanelMode.inPanel(globalThis.window)) {
       return () => undefined;
     }
-    const port = chrome.runtime.connect({ name: PORT });
-    SidePanelMode.viewPort = port;
     let activeRequest: number | undefined;
     let activeRevision: number | undefined;
     let stopFocusing = () => {};
-    port.onMessage.addListener((message) => {
-      if (message?.type === "connected") {
-        SidePanelMode.lastWindowId = message.windowId;
-        if (message.route) {
-          void navigate(chrome.runtime.getURL(SIDE_PANEL_PATH) + "#" + message.route);
-        }
-        port.postMessage({ type: "ready" });
-      } else if (
-        message?.type === "navigate" &&
-        (message.requestId !== activeRequest || message.revision !== activeRevision)
-      ) {
-        stopFocusing();
-        activeRequest = message.requestId;
-        activeRevision = message.revision;
-        void navigate(message.url).then((result) => {
-          if (activeRequest !== message.requestId || activeRevision !== message.revision) {
-            return;
-          }
-          port.postMessage({
-            type: "navigated",
-            requestId: message.requestId,
-            accepted: result !== false,
-          });
-          if (result === false) {
-            activeRequest = undefined;
-          } else {
-            stopFocusing = focusSidePanelUnlock(globalThis.window, message.url);
-          }
-        });
-      } else if (message?.type === "finished" && activeRequest != null) {
-        stopFocusing();
-        activeRequest = undefined;
-        void navigate(chrome.runtime.getURL(SIDE_PANEL_PATH) + "#/tabs/vault");
-      }
-    });
-    return () => {
+    const lost = () => {
       activeRequest = undefined;
       stopFocusing();
-      SidePanelMode.viewPort = undefined;
-      port.disconnect();
+    };
+    const port = new ForegroundPort(
+      PORT,
+      (message) => {
+        if (message?.type === "connected") {
+          SidePanelMode.lastWindowId = message.windowId;
+          if (message.route) {
+            void navigate(chrome.runtime.getURL(SIDE_PANEL_PATH) + "#" + message.route);
+          }
+          port.send({ type: "ready" });
+        } else if (
+          message?.type === "navigate" &&
+          (message.requestId !== activeRequest || message.revision !== activeRevision)
+        ) {
+          stopFocusing();
+          activeRequest = message.requestId;
+          activeRevision = message.revision;
+          void navigate(message.url)
+            .then((result) => {
+              if (activeRequest !== message.requestId || activeRevision !== message.revision) {
+                return;
+              }
+              if (
+                !port.send({
+                  type: "navigated",
+                  requestId: message.requestId,
+                  accepted: result !== false,
+                })
+              ) {
+                return;
+              }
+              if (result === false) {
+                activeRequest = undefined;
+              } else {
+                stopFocusing = focusSidePanelUnlock(globalThis.window, message.url);
+              }
+            })
+            .catch(() => {
+              activeRequest = undefined;
+              port.send({ type: "navigated", requestId: message.requestId, accepted: false });
+            });
+        } else if (message?.type === "finished" && activeRequest != null) {
+          stopFocusing();
+          activeRequest = undefined;
+          void navigate(chrome.runtime.getURL(SIDE_PANEL_PATH) + "#/tabs/vault");
+        }
+      },
+      lost,
+    );
+    SidePanelMode.viewPort = port;
+    return () => {
+      if (SidePanelMode.viewPort === port) {
+        SidePanelMode.viewPort = undefined;
+      }
+      port.dispose();
     };
   }
 }
