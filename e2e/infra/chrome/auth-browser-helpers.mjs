@@ -412,6 +412,39 @@ export async function freshWorkerSession(
 }
 
 /** Click the extension's real closed-shadow inline Unlock control, never an injected test opener. */
+async function inlinePointerInWebsite(frame, point) {
+  for (let current = frame; current.parentFrame(); current = current.parentFrame()) {
+    const owner = await current.frameElement();
+    if (!owner) return undefined;
+    try {
+      point = await owner.evaluate((element, childPoint) => {
+        const rect = element.getBoundingClientRect();
+        const x = rect.left + element.clientLeft + childPoint.x;
+        const y = rect.top + element.clientTop + childPoint.y;
+        let target = element;
+        while (target) {
+          const root = target.getRootNode();
+          if (root.elementFromPoint(x, y) !== target) return null;
+          target = root instanceof ShadowRoot ? root.host : null;
+        }
+        return { x, y };
+      }, point);
+    } finally {
+      await owner.dispose().catch(() => {});
+    }
+    if (!point) return undefined;
+  }
+  return point;
+}
+
+export function isReadyNativePanelTarget(target, extensionId) {
+  const url = target.url();
+  return (
+    url.startsWith(`chrome-extension://${extensionId}/popup/index.html?uilocation=sidepanel`) &&
+    new URL(url).searchParams.has("sidePanelDocument")
+  );
+}
+
 export async function clickInlineUnlock(browser, website, extensionId) {
   const log = (stage, details = {}) =>
     console.log(JSON.stringify({ inlineStage: stage, ...details }));
@@ -428,7 +461,6 @@ export async function clickInlineUnlock(browser, website, extensionId) {
   });
   const owner = await browser.target().createCDPSession();
   let documentHandle;
-  let frameElement;
   try {
     const { targetInfos } = await owner.send("Target.getTargets");
     log("fresh-frame-target-observation", {
@@ -479,28 +511,42 @@ export async function clickInlineUnlock(browser, website, extensionId) {
     const { object: control } = await session.send("DOM.resolveNode", {
       backendNodeId: button.backendNodeId,
     });
-    const { result: point } = await session.send("Runtime.callFunctionOn", {
+    await session.send("Runtime.callFunctionOn", {
       objectId: control.objectId,
       functionDeclaration: `function () {
         this.addEventListener("click", (event) => {
           this.__inlineUnlockTrustedClick = event.isTrusted;
         }, { once: true });
-        const rect = this.getBoundingClientRect();
-        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
       }`,
-      returnByValue: true,
     });
     // Pointer coordinates belong to the website's viewport. Dispatching local coordinates
     // on an OOPIF session can miss after Chrome resizes the website for the side panel.
-    frameElement = await frame.frameElement();
-    const frameBox = await frameElement?.boundingBox();
-    if (!frameBox) throw new Error("Visible inline menu iframe has no website bounds");
-    const border = await frameElement.evaluate((element) => ({
-      x: element.clientLeft,
-      y: element.clientTop,
-    }));
-    const x = frameBox.x + border.x + point.value.x;
-    const y = frameBox.y + border.y + point.value.y;
+    let previous;
+    const { x, y } = await poll(
+      async () => {
+        const { result } = await session.send("Runtime.callFunctionOn", {
+          objectId: control.objectId,
+          functionDeclaration: `function () {
+            const rect = this.getBoundingClientRect();
+            const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+            return this.contains(this.getRootNode().elementFromPoint(x, y)) ? { x, y } : null;
+          }`,
+          returnByValue: true,
+        });
+        if (result.value) return inlinePointerInWebsite(frame, result.value);
+      },
+      (point) => {
+        const stable =
+          point &&
+          previous &&
+          Math.abs(point.x - previous.x) < 0.5 &&
+          Math.abs(point.y - previous.y) < 0.5;
+        previous = point;
+        return stable;
+      },
+      "Stable browser hit target for the live inline Unlock button",
+      15_000,
+    );
     log("real-unlock-button-pointer-target", { x, y });
     await website.mouse.click(x, y);
     log("real-unlock-button-pointer-dispatched");
@@ -513,13 +559,15 @@ export async function clickInlineUnlock(browser, website, extensionId) {
       .then(({ result }) => result.value)
       .catch(() => "frame-disconnected");
     log("real-unlock-button-pointer-observed", { trustedClick: observed });
+    if (observed !== true && observed !== "frame-disconnected") {
+      throw new Error("The native pointer click did not reach the inline Unlock button.");
+    }
     return {
       actualControl: true,
       closedShadowPierced: true,
       dynamicFrameOrigin: !frameUrl.startsWith(`chrome-extension://${extensionId}/`),
     };
   } finally {
-    await frameElement?.dispose().catch(() => {});
     await documentHandle?.dispose().catch(() => {});
     await owner.detach().catch(() => {});
   }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { poll, screenshot } from "./auth-browser-helpers.mjs";
+import { isReadyNativePanelTarget, poll, screenshot } from "./auth-browser-helpers.mjs";
 
 export async function testPasskeyPanel({
   browser,
@@ -45,10 +45,7 @@ export async function testPasskeyPanel({
     await background.evaluate((id) => chrome.sidePanel.close({ windowId: id }), windowId);
     await poll(nativeContexts, (contexts) => contexts.length === 0, "Native panel closed");
   };
-  const isPanelTarget = (target) =>
-    target
-      .url()
-      .startsWith(`chrome-extension://${extensionId}/popup/index.html?uilocation=sidepanel`);
+  const isPanelTarget = (target) => isReadyNativePanelTarget(target, extensionId);
   const evaluatePanel = async (panel, expression) => {
     try {
       const response = await panel.send("Runtime.evaluate", {

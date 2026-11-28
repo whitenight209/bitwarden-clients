@@ -13,6 +13,7 @@ import {
   discoverExtensionId,
   exec,
   freshWorkerSession,
+  isReadyNativePanelTarget,
   liveWorkerTargets,
   poll,
   prepareDevelopmentProfile,
@@ -149,11 +150,7 @@ async function attachRequestedPanel(extensionId, previousDocumentId) {
   const previousTarget = nativeTarget;
   await native?.detach().catch(() => {});
   nativeTarget = await browser.waitForTarget(
-    (target) =>
-      target !== previousTarget &&
-      target
-        .url()
-        .startsWith(`chrome-extension://${extensionId}/popup/index.html?uilocation=sidepanel`),
+    (target) => target !== previousTarget && isReadyNativePanelTarget(target, extensionId),
     { timeout: 60_000 },
   );
   native = await nativeTarget.createCDPSession();
@@ -503,10 +500,9 @@ async function verifyUnlockedGeneratorEntrypoints(popup, extensionId) {
     [],
   );
   await popup.triggerExtensionAction(extension);
+  // The first native document navigates once to install its unique document token.
   const target = await browser.waitForTarget((target) =>
-    target
-      .url()
-      .startsWith(`chrome-extension://${extensionId}/popup/index.html?uilocation=sidepanel`),
+    isReadyNativePanelTarget(target, extensionId),
   );
   const session = await target.createCDPSession();
   secretInputActive = true;
@@ -867,10 +863,7 @@ async function runTest() {
     assert.ok(extension, "The startup-loaded extension is unavailable for the toolbar action");
     await blank.triggerExtensionAction(extension);
     nativeTarget = await browser.waitForTarget(
-      (target) =>
-        target
-          .url()
-          .startsWith(`chrome-extension://${extensionId}/popup/index.html?uilocation=sidepanel`),
+      (target) => isReadyNativePanelTarget(target, extensionId),
       { timeout: 60_000 },
     );
     native = await nativeTarget.createCDPSession();
