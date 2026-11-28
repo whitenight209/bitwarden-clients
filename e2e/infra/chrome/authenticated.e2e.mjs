@@ -826,10 +826,9 @@ async function runTest() {
         background = await lockAccount(lockSetup, extensionId, extensionPage);
         return background;
       },
-      unlockVault: async () => {
+      enterMasterPassword: async (panel) => {
         secretInputActive = true;
-        await typeSecretWithOsKeys(password);
-        await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
+        await panel.send("Input.insertText", { text: password });
       },
       onUnlocked: () => {
         secretInputActive = false;

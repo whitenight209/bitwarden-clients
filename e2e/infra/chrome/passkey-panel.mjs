@@ -10,7 +10,7 @@ export async function testPasskeyPanel({
   record,
   setPhase,
   lockVault,
-  unlockVault,
+  enterMasterPassword,
   onUnlocked,
 }) {
   const url = "http://localhost:18082/passkey-panel";
@@ -203,9 +203,9 @@ export async function testPasskeyPanel({
       () =>
         evaluatePanel(
           panel,
-          "location.hash.startsWith('#/fido2') && !!document.querySelector('app-fido2')",
+          `({ route: location.hash.split('?')[0], ready: !!document.querySelector('app-fido2') })`,
         ),
-      Boolean,
+      (state) => state?.route === "#/fido2" && state.ready,
       "Actual passkey screen in native panel",
     );
     await assertSameWindow(panel);
@@ -266,6 +266,19 @@ export async function testPasskeyPanel({
       const lockPanel = await target.createCDPSession();
       try {
         await assertSameWindow(lockPanel);
+        await poll(
+          () =>
+            evaluatePanel(
+              lockPanel,
+              `(() => {
+            const [route, query] = location.hash.split('?');
+            return { route, requestReceived: new URLSearchParams(query).has('sessionId') };
+          })()`,
+            ),
+          (state) => state?.route === "#/lock" && state.requestReceived,
+          "Locked panel received the WebAuthn request before unlocking",
+          20_000,
+        );
         assert.equal((await requestResult(label)).status, "pending");
         assert.equal(
           await evaluatePanel(lockPanel, "!!document.querySelector('app-fido2')"),
@@ -286,7 +299,12 @@ export async function testPasskeyPanel({
           Boolean,
           "Clicked passkey unlock control can receive OS keys",
         );
-        await unlockVault();
+        await enterMasterPassword(lockPanel);
+        await clickPanelControl(
+          lockPanel,
+          "document.querySelector('[data-testid=lock-master-password-unlock-button]')",
+          "Visible master password unlock submit control",
+        );
       } finally {
         await lockPanel.detach().catch(() => {});
       }
