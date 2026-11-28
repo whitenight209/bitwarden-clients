@@ -6098,9 +6098,6 @@
   "savePasskey": {
     "message": "패스키 저장"
   },
-  "continuePasskeyInBitwarden": {
-    "message": "Bitwarden에서 패스키로 계속"
-  },
   "savePasskeyNewLogin": {
     "message": "새 로그인으로 패스키 저장"
   },

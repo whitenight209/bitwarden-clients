@@ -6098,9 +6098,6 @@
   "savePasskey": {
     "message": "Save passkey"
   },
-  "continuePasskeyInBitwarden": {
-    "message": "Continue with passkey in Bitwarden"
-  },
   "savePasskeyNewLogin": {
     "message": "Save passkey as new login"
   },

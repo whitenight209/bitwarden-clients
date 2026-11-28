@@ -21,7 +21,7 @@ export async function testPasskeyPanel({
       void request.respond({
         status: 200,
         contentType: "text/html",
-        body: "<!doctype html><title>Passkey panel regression</title><h1>Passkey test</h1>",
+        body: '<!doctype html><title>Passkey panel regression</title><h1>Passkey test</h1><button id="continue-with-passkey">Continue with passkey</button>',
       });
     } else void request.continue().catch(() => {});
   });
@@ -44,6 +44,18 @@ export async function testPasskeyPanel({
   const closePanel = async () => {
     await background.evaluate((id) => chrome.sidePanel.close({ windowId: id }), windowId);
     await poll(nativeContexts, (contexts) => contexts.length === 0, "Native panel closed");
+  };
+  const waitForQueuedRequest = () =>
+    poll(
+      () => background.evaluate(() => chrome.action.getBadgeText({})),
+      (text) => text === "!",
+      "Passkey request waits for the toolbar without a site click",
+      15_000,
+    );
+  const openFromToolbar = async () => {
+    const extension = (await browser.extensions()).get(extensionId);
+    assert.ok(extension, "The extension is available for the toolbar action");
+    await website.triggerExtensionAction(extension);
   };
   const isPanelTarget = (target) => isReadyNativePanelTarget(target, extensionId);
   const evaluatePanel = async (panel, expression) => {
@@ -165,11 +177,13 @@ export async function testPasskeyPanel({
       },
     );
   }
-  async function begin(action, label, panelState) {
+  async function begin(action, label, panelState, websiteClick = false) {
     if (panelState === "closed") await closePanel();
     else assert.equal((await nativeContexts()).length, 1, "The existing-panel fixture is not open");
     await website.bringToFront();
-    setPhase(`passkey-${label}-request-without-user-gesture`);
+    setPhase(
+      `passkey-${label}-${websiteClick ? "original-website-click" : "request-without-user-gesture"}`,
+    );
     await poll(
       async () =>
         (
@@ -183,14 +197,35 @@ export async function testPasskeyPanel({
       "No transient website user activation",
       10_000,
     );
-    await websiteSession.send("Runtime.evaluate", {
-      expression: `(${startRequest.toString()})(${JSON.stringify(action)},${JSON.stringify(label)})`,
+    const request = `(${startRequest.toString()})(${JSON.stringify(action)},${JSON.stringify(label)})`;
+    if (websiteClick) {
+      await websiteSession.send("Runtime.evaluate", {
+        expression: `(() => {
+          globalThis.websitePasskeyPromptShown = false;
+          const observer = new MutationObserver((records) => {
+            if (records.some(record => [...record.addedNodes].some(node => node.matches?.(${JSON.stringify(prompt)})))) {
+              globalThis.websitePasskeyPromptShown = true;
+              observer.disconnect();
+            }
+          });
+          observer.observe(document.documentElement, { childList: true });
+          document.querySelector('#continue-with-passkey').addEventListener('click', (event) => {
+            if (event.isTrusted) requestAnimationFrame(() => ${request});
+          }, { once: true });
+        })()`,
+        userGesture: false,
+      });
+      await website.click("#continue-with-passkey");
+      await website.waitForFunction((key) => !!globalThis.passkeyResults?.[key], {}, label);
+    } else {
+      await websiteSession.send("Runtime.evaluate", { expression: request, userGesture: false });
+    }
+    const { result } = await websiteSession.send("Runtime.evaluate", {
+      expression: `globalThis.passkeyResults[${JSON.stringify(label)}].activation`,
+      returnByValue: true,
       userGesture: false,
     });
-    assert.equal(
-      await website.evaluate((key) => globalThis.passkeyResults[key].activation, label),
-      false,
-    );
+    assert.equal(result.value, websiteClick);
   }
   async function attachChooser(label) {
     setPhase(`passkey-${label}-native-panel`);
@@ -243,19 +278,20 @@ export async function testPasskeyPanel({
       });
   }
   const requestResult = (label) => website.evaluate((key) => globalThis.passkeyResults[key], label);
-  async function approveRequest(action, label, panelState, vaultWasLocked = false) {
+  async function approveRequest(
+    action,
+    label,
+    panelState,
+    vaultWasLocked = false,
+    websiteClick = false,
+  ) {
     const before = panelState === "open" ? (await nativeContexts())[0]?.documentId : undefined;
-    await begin(action, label, panelState);
-    if (panelState === "closed") {
-      try {
-        await website.waitForSelector(prompt, { visible: true });
-      } catch (error) {
-        throw new Error(
-          `Passkey prompt missing (request: ${(await requestResult(label)).status}, native panels: ${(await nativeContexts()).length})`,
-          { cause: error },
-        );
-      }
-      await website.click(prompt);
+    await begin(action, label, panelState, websiteClick);
+    if (panelState === "closed" && !websiteClick) {
+      await waitForQueuedRequest();
+      assert.deepEqual(await nativeContexts(), []);
+      assert.equal(await website.$(prompt), null);
+      await openFromToolbar();
     }
     if (vaultWasLocked) {
       setPhase(`passkey-${label}-unlock`);
@@ -333,6 +369,9 @@ export async function testPasskeyPanel({
         result.responseValidated && result.knownCredential,
         "WebAuthn response failed RP challenge/shape/credential checks",
       );
+      if (websiteClick) {
+        assert.equal(await website.evaluate(() => globalThis.websitePasskeyPromptShown), false);
+      }
       await poll(
         () => evaluatePanel(panel, "!location.hash.startsWith('#/fido2')"),
         Boolean,
@@ -340,8 +379,8 @@ export async function testPasskeyPanel({
       );
       record(`passkey-${label}-completed-from-native-panel`, {
         panelAlreadyOpen: panelState === "open",
-        websitePromptClicked: panelState === "closed",
-        activation: false,
+        openedFromToolbar: panelState === "closed" && !websiteClick,
+        activation: websiteClick,
         responseValidated: true,
         knownCredential: true,
         sameBrowserWindow: true,
@@ -354,7 +393,7 @@ export async function testPasskeyPanel({
   async function abortRequest(label, panelState) {
     await begin("assert", label, panelState);
     let panel;
-    if (panelState === "closed") await website.waitForSelector(prompt, { visible: true });
+    if (panelState === "closed") await waitForQueuedRequest();
     else panel = await attachChooser(label);
     try {
       setPhase(`passkey-${label}-site-aborts-real-request`);
@@ -369,23 +408,29 @@ export async function testPasskeyPanel({
         "RP AbortSignal rejected the original request",
       );
       assert.equal(result.status, "AbortError");
-      await website.waitForSelector(prompt, { hidden: true });
+      assert.equal(await website.$(prompt), null);
       if (panel)
         await poll(
           () => evaluatePanel(panel, "!location.hash.startsWith('#/fido2')"),
           Boolean,
           "Aborted passkey chooser was dismissed",
         );
-      else
+      else {
+        await poll(
+          () => background.evaluate(() => chrome.action.getBadgeText({})),
+          (text) => text !== "!",
+          "Cancelled pending passkey clears the toolbar badge",
+        );
         assert.equal(
           (await nativeContexts()).length,
           0,
           "An aborted unopened request opened a native panel",
         );
+      }
       record(`passkey-${label}-aborted-by-real-rp-signal`, {
         status: "AbortError",
         panelAlreadyOpen: panelState === "open",
-        stalePromptRemoved: true,
+        requestCleared: true,
       });
     } finally {
       await panel?.detach().catch(() => {});
@@ -423,9 +468,7 @@ export async function testPasskeyPanel({
       20_000,
     );
     if (panelState === "open") {
-      const extension = (await browser.extensions()).get(extensionId);
-      assert.ok(extension, "The extension is unavailable after locking the vault");
-      await website.triggerExtensionAction(extension);
+      await openFromToolbar();
       const target = await browser.waitForTarget(isPanelTarget);
       const panel = await target.createCDPSession();
       try {
@@ -442,10 +485,17 @@ export async function testPasskeyPanel({
         await panel.detach().catch(() => {});
       }
     }
-    await approveRequest("assert", `assert-locked-${panelState}-panel`, panelState, true);
+    await approveRequest(
+      "assert",
+      `assert-locked-${panelState}-panel`,
+      panelState,
+      true,
+      panelState === "closed",
+    );
   }
   try {
     await approveRequest("register", "register", "closed");
+    await approveRequest("assert", "assert-from-original-website-click", "closed", false, true);
     await approveRequest("assert", "assert", "closed");
     await approveRequest("register", "register-existing-panel", "open");
     await approveRequest("assert", "assert-existing-panel", "open");

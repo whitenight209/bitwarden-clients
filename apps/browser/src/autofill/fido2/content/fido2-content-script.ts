@@ -14,7 +14,7 @@ import {
   MessageTypes,
 } from "./messaging/message";
 import { MessageWithMetadata, Messenger } from "./messaging/messenger";
-import { OPEN_PASSKEY_PANEL, PASSKEY_PANEL_PROMPT } from "./passkey-panel-messages";
+import { OPEN_PASSKEY_PANEL, PASSKEY_PANEL_REQUEST_READY } from "./passkey-panel-messages";
 
 (function (globalContext) {
   const shouldExecuteContentScript =
@@ -36,54 +36,30 @@ import { OPEN_PASSKEY_PANEL, PASSKEY_PANEL_PROMPT } from "./passkey-panel-messag
   messenger.handler = handleFido2Message;
   const port = chrome.runtime.connect({ name: Fido2PortName.InjectedScript });
   port.onDisconnect.addListener(handlePortOnDisconnect);
-  let panelPrompt: { sessionId: string; element: HTMLElement } | undefined;
+  const activatedRequests = new Set<string>();
   if (globalContext.self === globalContext.top) {
     // eslint-disable-next-line no-restricted-syntax -- This listener belongs to the top-level content script and is removed on disconnect.
-    chrome.runtime.onMessage.addListener(updatePanelPrompt);
+    chrome.runtime.onMessage.addListener(openReadyPasskeyPanel);
   }
 
-  function updatePanelPrompt(
-    message: { command?: string; sessionId?: string; visible?: boolean },
+  function openReadyPasskeyPanel(
+    message: { command?: string; sessionId?: string; requestId?: string },
     sender: chrome.runtime.MessageSender,
   ): void {
     if (
-      message?.command !== PASSKEY_PANEL_PROMPT ||
+      message?.command !== PASSKEY_PANEL_REQUEST_READY ||
       typeof message.sessionId !== "string" ||
+      !message.requestId ||
       sender.id !== chrome.runtime.id ||
-      sender.tab
+      sender.tab ||
+      !activatedRequests.delete(message.requestId) ||
+      !globalContext.navigator.userActivation?.isActive
     ) {
       return;
     }
-    if (!message.visible) {
-      if (panelPrompt?.sessionId === message.sessionId) {
-        panelPrompt.element.remove();
-        panelPrompt = undefined;
-      }
-      return;
-    }
-    if (panelPrompt?.sessionId === message.sessionId) {
-      return;
-    }
-    panelPrompt?.element.remove();
-    const { document } = globalContext;
-    const element = document.createElement("div");
-    element.dataset.bitwardenPasskeyPanel = "";
-    element.style.cssText =
-      "all:initial;position:fixed;inset:12px 12px auto auto;z-index:2147483647;";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = chrome.i18n.getMessage("continuePasskeyInBitwarden");
-    button.style.cssText =
-      "background:#175ddc;color:#fff;border:2px solid #fff;border-radius:8px;padding:12px;font:600 14px system-ui;cursor:pointer;";
-    const { sessionId } = message;
-    button.addEventListener("click", (event) => {
-      if (event.isTrusted && panelPrompt?.sessionId === sessionId) {
-        void sendExtensionMessage(OPEN_PASSKEY_PANEL, { sessionId }).catch(() => {});
-      }
-    });
-    element.attachShadow({ mode: "closed" }).append(button);
-    panelPrompt = { sessionId, element };
-    document.documentElement.append(element);
+    // The background has queued the authorized request. Send the open message
+    // from the originating document while its original click is still active.
+    void sendExtensionMessage(OPEN_PASSKEY_PANEL, { sessionId: message.sessionId }).catch(() => {});
   }
 
   // Report this frame's iframe `allow=` attributes to the background so the
@@ -103,7 +79,7 @@ import { OPEN_PASSKEY_PANEL, PASSKEY_PANEL_PROMPT } from "./passkey-panel-messag
     message: MessageWithMetadata,
     abortController?: AbortController,
   ) {
-    const requestId = Date.now().toString();
+    const requestId = crypto.randomUUID();
     const abortHandler = () =>
       sendExtensionMessage("fido2AbortRequest", { abortedRequestId: requestId });
     abortController?.signal.addEventListener("abort", abortHandler);
@@ -194,13 +170,22 @@ import { OPEN_PASSKEY_PANEL, PASSKEY_PANEL_PROMPT } from "./passkey-panel-messag
       sameOriginWithAncestors: globalContext.self === globalContext.top,
     };
 
-    const result = await sendExtensionMessage(command, { data, requestId });
-
-    if (result && result.error !== undefined) {
-      return Promise.reject(result.error);
+    if (
+      data.sameOriginWithAncestors &&
+      !("mediation" in data && data.mediation === "conditional") &&
+      globalContext.navigator.userActivation?.isActive
+    ) {
+      activatedRequests.add(requestId);
     }
-
-    return Promise.resolve({ type, result });
+    try {
+      const result = await sendExtensionMessage(command, { data, requestId });
+      if (result && result.error !== undefined) {
+        throw result.error;
+      }
+      return { type, result };
+    } finally {
+      activatedRequests.delete(requestId);
+    }
   }
 
   /**
@@ -274,8 +259,8 @@ import { OPEN_PASSKEY_PANEL, PASSKEY_PANEL_PROMPT } from "./passkey-panel-messag
    * implemented page-script.js logic.
    */
   function handlePortOnDisconnect() {
-    chrome.runtime.onMessage.removeListener(updatePanelPrompt);
-    panelPrompt?.element.remove();
+    chrome.runtime.onMessage.removeListener(openReadyPasskeyPanel);
+    activatedRequests.clear();
     void messenger.destroy();
   }
 })(globalThis);

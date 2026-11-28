@@ -333,7 +333,7 @@ export class Fido2Background implements Fido2BackgroundInterface {
     await this.enforcePermissionsPolicyGate(sender, WebAuthnPermissionsPolicyFeature.Create);
     return await this.handleCredentialRequest<CreateCredentialResult>(
       message,
-      await this.buildParentWindowReference(sender),
+      await this.buildParentWindowReference(sender, message.requestId),
       (data, tabParam, abortController) =>
         this.fido2ClientService.createCredential(
           data as CreateCredentialParams,
@@ -359,7 +359,7 @@ export class Fido2Background implements Fido2BackgroundInterface {
     await this.enforcePermissionsPolicyGate(sender, WebAuthnPermissionsPolicyFeature.Get);
     return await this.handleCredentialRequest<AssertCredentialResult>(
       message,
-      await this.buildParentWindowReference(sender),
+      await this.buildParentWindowReference(sender, message.requestId),
       (data, tabParam, abortController) =>
         this.fido2ClientService.assertCredential(
           data as AssertCredentialParams,
@@ -379,11 +379,16 @@ export class Fido2Background implements Fido2BackgroundInterface {
    */
   private async buildParentWindowReference(
     sender: chrome.runtime.MessageSender,
+    requestId?: string,
   ): Promise<BrowserFido2ParentWindowReference> {
     const tab = sender.tab!;
     const requestFrameUrl = (await BrowserApi.getSenderFrameUrl(sender)) ?? tab.url;
 
-    return { ...tab, requestFrameUrl };
+    return {
+      ...tab,
+      requestFrameUrl,
+      topLevelRequestId: sender.frameId === 0 ? requestId : undefined,
+    };
   }
 
   /**
@@ -561,7 +566,7 @@ export class Fido2Background implements Fido2BackgroundInterface {
   ): boolean | void => {
     if (message?.command === OPEN_PASSKEY_PANEL) {
       if (typeof message.sessionId === "string") {
-        // Call before awaiting anything so Chrome can use the page button's click.
+        // Call before awaiting anything so Chrome can use the original page click.
         void SidePanelMode.revealPasskeyRequest(message.sessionId, sender);
       }
       return;
