@@ -31,6 +31,7 @@ export async function openNativeSidePanel(page: Page, windowId?: number): Promis
 /** CDP is needed because a native panel may not appear in Playwright context.pages(). */
 export class NativeSidePanel {
   private sequence = 0;
+  private disposed = false;
   private constructor(
     private cdp: CDPSession,
     private sessionId: string,
@@ -129,7 +130,21 @@ export class NativeSidePanel {
   }
 
   async dispose(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
     await this.cdp.send("Target.detachFromTarget", { sessionId: this.sessionId }).catch(() => {});
-    await this.cdp.detach();
+    try {
+      await this.cdp.detach();
+    } catch (error) {
+      // Replacing a native panel can also close its CDP session before cleanup runs.
+      if (
+        !(error instanceof Error) ||
+        !/Target page, context or browser has been closed|Session closed/i.test(error.message)
+      ) {
+        throw error;
+      }
+    }
   }
 }
