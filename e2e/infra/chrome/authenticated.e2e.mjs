@@ -22,10 +22,12 @@ import {
   visible,
   waitVisible,
 } from "./auth-browser-helpers.mjs";
+import { testPasskeyPanel } from "./passkey-panel.mjs";
 import { registerTemporaryAccount, waitForTestServer } from "./test-server.mjs";
 
 const password = process.env.E2E_PASSWORD;
 const preopenLockedPanel = process.env.E2E_PREOPEN_LOCKED_PANEL === "1";
+const passkeyPanel = process.env.E2E_PASSKEY_PANEL === "1";
 const account = {
   server: process.env.E2E_SERVER,
   email: process.env.E2E_EMAIL,
@@ -41,14 +43,19 @@ const redact = (value) => {
 };
 const report = {
   schemaVersion: 1,
-  suite: "authenticated-inline-unlock",
-  variant: preopenLockedPanel ? "preopened-locked-panel" : "closed-panel",
+  suite: passkeyPanel ? "authenticated-passkey-panel" : "authenticated-inline-unlock",
+  variant: passkeyPanel
+    ? "passkey-panel"
+    : preopenLockedPanel
+      ? "preopened-locked-panel"
+      : "closed-panel",
   unlockPanelBehavior:
     "Explicit unlock refreshes the locked panel document and discards partial password input.",
   startedAt: new Date().toISOString(),
   steps: [],
-  scope:
-    "Temporary VM-local Vaultwarden account; real extension login, settings toggle, account lock, original inline Unlock control, native password autofocus and OS keyboard unlock. Existing personal profiles are never used.",
+  scope: passkeyPanel
+    ? "Temporary Vaultwarden account; website WebAuthn registration and assertion through the real native side panel."
+    : "Temporary VM-local Vaultwarden account; real extension login, settings toggle, account lock, original inline Unlock control, native password autofocus and OS keyboard unlock. Existing personal profiles are never used.",
 };
 let browser;
 let native;
@@ -98,7 +105,7 @@ async function nativeState() {
   try {
     result = await native.send("Runtime.evaluate", {
       expression:
-        '({route:location.hash.split("?")[0],queryKeys:[...new URLSearchParams(location.search).keys()],singleActionPopout:new URLSearchParams(location.search).get("singleActionPopout")==="auth_unlockExtension"?"auth_unlockExtension":null,userActivation:{isActive:navigator.userActivation?.isActive,hasBeenActive:navigator.userActivation?.hasBeenActive},hasFocus:document.hasFocus(),activeElement:document.activeElement?.getAttribute("data-testid"),inputType:document.activeElement?.getAttribute("type"),masterPasswordVisible:(()=>{const input=document.querySelector("[data-testid=lock-master-password-input]");const r=input?.getBoundingClientRect();return !!input&&r.width>0&&r.height>0&&!input.disabled})(),lockScreen:!!document.querySelector("[data-testid=lock-screen]"),accountButton:!!document.querySelector("[data-testid=current-account-button]")})',
+        '({route:location.hash.split("?")[0],queryKeys:[...new URLSearchParams(location.search).keys()],singleActionPopout:new URLSearchParams(location.search).get("singleActionPopout")==="auth_unlockExtension"?"auth_unlockExtension":null,userActivation:{isActive:navigator.userActivation?.isActive,hasBeenActive:navigator.userActivation?.hasBeenActive},hasFocus:document.hasFocus(),activeElement:document.activeElement?.getAttribute("data-testid"),inputType:document.activeElement?.getAttribute("type"),masterPasswordVisible:(()=>{const input=document.querySelector("[data-testid=lock-master-password-input]");const r=input?.getBoundingClientRect();return !!input&&r.width>0&&r.height>0&&!input.disabled})(),lockScreen:!!document.querySelector("[data-testid=lock-screen]"),generatorVisible:!!document.querySelector("tools-credential-generator"),accountButton:!!document.querySelector("[data-testid=current-account-button]")})',
       returnByValue: true,
     });
   } catch (error) {
@@ -400,7 +407,232 @@ async function diagnose(extensionId) {
   return result;
 }
 
-try {
+async function verifyPasswordGenerator(session) {
+  async function generator(operation) {
+    const response = await session.send("Runtime.evaluate", {
+      expression: `(${operation.toString()})()`,
+      returnByValue: true,
+    });
+    if (response.exceptionDetails) {
+      throw new Error("Password generator evaluation failed.");
+    }
+    return response.result.value;
+  }
+  await poll(
+    () =>
+      generator(() => {
+        const field = document.querySelector(
+          'tools-password-settings input[formcontrolname="length"]',
+        );
+        if (!field || field.disabled) return false;
+        field.value = "24";
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }),
+    Boolean,
+    "Password generator length setting",
+  );
+  await poll(
+    () =>
+      generator(() => {
+        const characters = document.querySelectorAll(
+          "tools-credential-generator bit-color-password [data-password-character] > span:first-child",
+        );
+        const value = Array.from(characters, (character) => character.textContent).join("");
+        const button = document.querySelector(
+          'tools-credential-generator button[bitIconButton="bwi-generate"]',
+        );
+        if (!button || button.disabled || value.length !== 24) return false;
+        globalThis.generatorE2ePrevious = value;
+        button.click();
+        return true;
+      }),
+    Boolean,
+    "First 24-character password and the generate button",
+  );
+  const generated = await poll(
+    () =>
+      generator(() => {
+        const characters = document.querySelectorAll(
+          "tools-credential-generator bit-color-password [data-password-character] > span:first-child",
+        );
+        const value = Array.from(characters, (character) => character.textContent).join("");
+        const matchesCharacterOptions = [
+          ["uppercase", /[A-Z]/],
+          ["lowercase", /[a-z]/],
+          ["number", /[0-9]/],
+          ["special", /[^A-Za-z0-9]/],
+        ].every(([option, pattern]) => {
+          const input = document.querySelector(
+            `tools-password-settings input[formcontrolname="${option}"]`,
+          );
+          return input && pattern.test(value) === input.checked;
+        });
+        return {
+          length: value.length,
+          changed: value !== globalThis.generatorE2ePrevious,
+          matchesCharacterOptions,
+        };
+      }),
+    (value) => value.length === 24 && value.changed && value.matchesCharacterOptions,
+    "Regenerated password respects length and character options",
+  );
+  await generator(() => delete globalThis.generatorE2ePrevious);
+  return generated;
+}
+
+async function verifyUnlockedGeneratorEntrypoints(popup, extensionId) {
+  const owner = await popup.evaluate(async () => (await chrome.windows.getCurrent()).id);
+  const extension = (await browser.extensions()).get(extensionId);
+  assert.ok(extension, "The extension is available for a real toolbar action");
+  setPhase("unlocked-closed-panel-opened-from-toolbar");
+  assert.deepEqual(
+    await popup.evaluate(() => chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] })),
+    [],
+  );
+  await popup.triggerExtensionAction(extension);
+  const target = await browser.waitForTarget((target) =>
+    target
+      .url()
+      .startsWith(`chrome-extension://${extensionId}/popup/index.html?uilocation=sidepanel`),
+  );
+  const session = await target.createCDPSession();
+  secretInputActive = true;
+  try {
+    await poll(
+      async () => {
+        const response = await session
+          .send("Runtime.evaluate", {
+            expression: "chrome.windows.getCurrent().then(window => window.id)",
+            awaitPromise: true,
+            returnByValue: true,
+          })
+          .catch(() => null);
+        return response?.result?.value;
+      },
+      (id) => id === owner,
+      "Native generator panel belongs to the requesting window",
+    );
+    await poll(
+      async () => {
+        const response = await session.send("Runtime.evaluate", {
+          expression: `(() => { const link = [...document.querySelectorAll('footer nav button[role=link]')].find(button => button.textContent.trim() === 'Generator'); if (!link) return false; link.click(); return true; })()`,
+          returnByValue: true,
+        });
+        return response.result.value;
+      },
+      Boolean,
+      "Open the generator from the panel navigation",
+    );
+    record(
+      "unlocked-closed-panel-opens-and-generates-password",
+      await verifyPasswordGenerator(session),
+    );
+    setPhase("unlocked-existing-panel-returns-to-generator");
+    await poll(
+      async () => {
+        const response = await session.send("Runtime.evaluate", {
+          expression: `(() => { const link = [...document.querySelectorAll('footer nav button[role=link]')].find(button => button.textContent.trim() === 'Vault'); if (!link) return false; link.click(); return true; })()`,
+          returnByValue: true,
+        });
+        return response.result.value;
+      },
+      Boolean,
+      "Return to the vault inside the same native panel",
+    );
+    await poll(
+      async () => {
+        const response = await session.send("Runtime.evaluate", {
+          expression: `(() => { if (!location.hash.startsWith('#/tabs/vault')) return false; const link = [...document.querySelectorAll('footer nav button[role=link]')].find(button => button.textContent.trim() === 'Generator'); if (!link) return false; link.click(); return true; })()`,
+          returnByValue: true,
+        });
+        return response.result.value;
+      },
+      Boolean,
+      "Reopen the generator from the vault in the same native panel",
+    );
+    record(
+      "unlocked-existing-panel-generates-password-again",
+      await verifyPasswordGenerator(session),
+    );
+    secretInputActive = false;
+  } finally {
+    await session.detach().catch(() => {});
+    await popup.evaluate((windowId) => chrome.sidePanel.close({ windowId }), owner);
+    await poll(
+      () => popup.evaluate(() => chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"] })),
+      (contexts) => contexts.length === 0,
+      "Native generator panel closed before locking",
+    );
+  }
+}
+
+async function lockAccount(popup, extensionId, extensionPage) {
+  setPhase("lock-account-vault-page");
+  // This is setup, before the original web entrypoint. Background tabs can suspend
+  // animation frames that Puppeteer's real element clicks wait for.
+  await popup.bringToFront();
+  await popup.goto(extensionPage + "#/tabs/vault");
+  await dismissOnboarding(popup);
+  setPhase("lock-account-open-account-menu");
+  const avatarTarget = await clickStableSetup(popup, "[data-testid=current-account-button]");
+  record("account-menu-real-pointer-click", { target: avatarTarget });
+  await poll(
+    () => new URL(popup.url()).hash.split("?")[0],
+    (route) => route === "#/account-switcher",
+    "Account switcher route after avatar pointer click",
+  );
+  setPhase("lock-account-select-lock-now");
+  const beforeLockWorkers = await liveWorkerTargets(browser, extensionId);
+  assert.ok(beforeLockWorkers.length > 0, "No extension worker exists before account lock");
+  record("pre-lock-worker-targets-observed", { workers: beforeLockWorkers });
+  await clickStableSetup(popup, "[data-testid=account-switcher-lock-now-button]").catch((error) => {
+    if (!/Target closed|Session closed|Execution context.*destroyed/i.test(String(error)))
+      throw error;
+  });
+  setPhase("lock-account-confirm-lock-screen");
+  await poll(
+    async () =>
+      popup.isClosed() || !!(await visible(popup, "[data-testid=lock-screen]").catch(() => false)),
+    Boolean,
+    "Account lock closed or replaced the extension UI",
+  );
+  if (!popup.isClosed()) await popup.close();
+  record("account-locked-through-real-ui");
+
+  setPhase("wait-for-actual-lock-extension-reload");
+  const lockedWorker = await freshWorkerSession(browser, extensionId, {
+    excludeTargetIds: beforeLockWorkers.map((target) => target.targetId),
+    timeout: 60_000,
+  });
+  await bounded(
+    lockedWorker.evaluate(() => true),
+    "Reloaded locked extension worker responsiveness",
+    5_000,
+  );
+  record("locked-extension-reloaded-with-new-responsive-worker", {
+    targetId: lockedWorker.targetId,
+    rawCdp: true,
+  });
+  setPhase("wait-for-reloaded-worker-chrome-api-bindings");
+  const workerApis = await poll(
+    () =>
+      lockedWorker.evaluate(() => ({
+        runtimeContexts:
+          typeof chrome !== "undefined" && typeof chrome.runtime?.getContexts === "function",
+        windowsGetAll:
+          typeof chrome !== "undefined" && typeof chrome.windows?.getAll === "function",
+      })),
+    (value) => value.runtimeContexts && value.windowsGetAll,
+    "Reloaded worker Chrome API bindings are available",
+    10_000,
+  );
+  record("reloaded-worker-chrome-api-bindings-ready", workerApis);
+  return lockedWorker;
+}
+
+async function runTest() {
   assert.ok(
     account.email && password && account.server,
     "E2E_EMAIL, E2E_PASSWORD and E2E_SERVER are required",
@@ -577,66 +809,38 @@ try {
   );
   record("side-panel-and-inline-enabled-through-real-settings-ui");
 
-  setPhase("lock-account-vault-page");
-  // This is setup, before the original web entrypoint. Background tabs can suspend
-  // animation frames that Puppeteer's real element clicks wait for.
-  await popup.bringToFront();
-  await popup.goto(extensionPage + "#/tabs/vault");
-  await dismissOnboarding(popup);
-  setPhase("lock-account-open-account-menu");
-  const avatarTarget = await clickStableSetup(popup, "[data-testid=current-account-button]");
-  record("account-menu-real-pointer-click", { target: avatarTarget });
-  await poll(
-    () => new URL(popup.url()).hash.split("?")[0],
-    (route) => route === "#/account-switcher",
-    "Account switcher route after avatar pointer click",
-  );
-  setPhase("lock-account-select-lock-now");
-  const beforeLockWorkers = await liveWorkerTargets(browser, extensionId);
-  assert.ok(beforeLockWorkers.length > 0, "No extension worker exists before account lock");
-  record("pre-lock-worker-targets-observed", { workers: beforeLockWorkers });
-  await clickStableSetup(popup, "[data-testid=account-switcher-lock-now-button]").catch((error) => {
-    if (!/Target closed|Session closed|Execution context.*destroyed/i.test(String(error)))
-      throw error;
-  });
-  setPhase("lock-account-confirm-lock-screen");
-  await poll(
-    async () =>
-      popup.isClosed() || !!(await visible(popup, "[data-testid=lock-screen]").catch(() => false)),
-    Boolean,
-    "Account lock closed or replaced the extension UI",
-  );
-  if (!popup.isClosed()) await popup.close();
-  record("account-locked-through-real-ui");
+  if (passkeyPanel) {
+    const windowId = await popup.evaluate(async () => (await chrome.windows.getCurrent()).id);
+    background = await freshWorkerSession(browser, extensionId);
+    await popup.close();
+    await testPasskeyPanel({
+      browser,
+      background,
+      extensionId,
+      windowId,
+      record,
+      setPhase,
+      lockVault: async () => {
+        const lockSetup = await browser.newPage();
+        await lockSetup.goto(extensionPage + "#/tabs/vault");
+        background = await lockAccount(lockSetup, extensionId, extensionPage);
+        return background;
+      },
+      unlockVault: async () => {
+        secretInputActive = true;
+        await typeSecretWithOsKeys(password);
+        await exec("xdotool", ["key", "--clearmodifiers", "Return"]);
+      },
+      onUnlocked: () => {
+        secretInputActive = false;
+      },
+    });
+    return;
+  }
 
-  setPhase("wait-for-actual-lock-extension-reload");
-  background = await freshWorkerSession(browser, extensionId, {
-    excludeTargetIds: beforeLockWorkers.map((target) => target.targetId),
-    timeout: 60_000,
-  });
-  await bounded(
-    background.evaluate(() => true),
-    "Reloaded locked extension worker responsiveness",
-    5_000,
-  );
-  record("locked-extension-reloaded-with-new-responsive-worker", {
-    targetId: background.targetId,
-    rawCdp: true,
-  });
-  setPhase("wait-for-reloaded-worker-chrome-api-bindings");
-  const workerApis = await poll(
-    () =>
-      background.evaluate(() => ({
-        runtimeContexts:
-          typeof chrome !== "undefined" && typeof chrome.runtime?.getContexts === "function",
-        windowsGetAll:
-          typeof chrome !== "undefined" && typeof chrome.windows?.getAll === "function",
-      })),
-    (value) => value.runtimeContexts && value.windowsGetAll,
-    "Reloaded worker Chrome API bindings are available",
-    10_000,
-  );
-  record("reloaded-worker-chrome-api-bindings-ready", workerApis);
+  await verifyUnlockedGeneratorEntrypoints(popup, extensionId);
+
+  background = await lockAccount(popup, extensionId, extensionPage);
   setPhase("observe-original-browser-window-layout");
   expectedBrowserWindows = await background.evaluate(async () =>
     (await chrome.windows.getAll())
@@ -748,6 +952,7 @@ try {
     "Native master-password input autofocus",
     35_000,
   );
+  assert.equal(focused.generatorVisible, false, "The generator is unavailable while locked");
   record("native-master-password-focus-without-repair", focused);
   const firstPanel = await assertRequestedPanel(extensionId, preopenedDocumentId);
   record(
@@ -854,6 +1059,19 @@ try {
     existingNativeTarget: true,
     noFocusRepair: true,
   });
+  setPhase("native-panel-password-generation-after-unlock");
+  secretInputActive = true;
+  const generated = await verifyPasswordGenerator(native);
+  secretInputActive = false;
+  record("native-panel-password-generated-and-regenerated-after-unlock", {
+    ...generated,
+    initiallyLocked: true,
+    panelInitiallyOpen: preopenLockedPanel,
+  });
+}
+
+try {
+  await runTest();
   assert.equal(report.unhandled, undefined, "Unhandled browser operation occurred");
   report.success = true;
 } catch (error) {

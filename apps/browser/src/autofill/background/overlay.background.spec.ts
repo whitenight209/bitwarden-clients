@@ -5004,5 +5004,24 @@ describe("OverlayBackground", () => {
       expect(overlayBackground["inlineMenuListPort"]).toBeNull();
       expect(overlayBackground["inlineMenuButtonPort"]).toBeNull();
     });
+
+    it("keeps the replacement menu ports connected when old frames disconnect", async () => {
+      await initOverlayElementPorts();
+      const oldListPort = listPortSpy;
+      const oldButtonPort = buttonPortSpy;
+      await initOverlayElementPorts();
+
+      triggerPortOnDisconnectEvent(oldListPort);
+      triggerPortOnDisconnectEvent(oldButtonPort);
+
+      expect(overlayBackground["inlineMenuListPort"]).toBe(listPortSpy);
+      expect(overlayBackground["inlineMenuListMessageConnectorPort"]).toBe(listMessageConnectorSpy);
+      expect(listMessageConnectorSpy.disconnect).not.toHaveBeenCalled();
+      expect(overlayBackground["inlineMenuButtonPort"]).toBe(buttonPortSpy);
+      expect(overlayBackground["inlineMenuButtonMessageConnectorPort"]).toBe(
+        buttonMessageConnectorSpy,
+      );
+      expect(buttonMessageConnectorSpy.disconnect).not.toHaveBeenCalled();
+    });
   });
 });

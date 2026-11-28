@@ -472,6 +472,27 @@ export class SidePanelMode {
     return SidePanelMode.requests.some((item) => item.key === key);
   }
 
+  static revealPasskeyRequest(
+    sessionId: string,
+    sender: chrome.runtime.MessageSender,
+  ): Promise<void> | undefined {
+    const tab = sender.tab;
+    if (sender.id !== chrome.runtime.id || sender.frameId !== 0 || tab?.id == null) {
+      return;
+    }
+    const request = SidePanelMode.requests.find(
+      (item) =>
+        item.key === `vault_Fido2Popout_${sessionId}` &&
+        item.windowId === tab.windowId &&
+        item.expires > Date.now() &&
+        new URLSearchParams(new URL(item.url).hash.split("?")[1]).get("senderTabId") ===
+          String(tab.id),
+    );
+    if (request) {
+      return SidePanelMode.reveal(request.windowId);
+    }
+  }
+
   private static internal(sender: chrome.runtime.MessageSender): boolean {
     if (sender.id !== chrome.runtime.id || !sender.url) {
       return false;

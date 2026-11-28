@@ -405,6 +405,37 @@ test("a denied user gesture leaves a queued request instead of opening a fallbac
   expect(mode.hasRequest("fido_1")).toBe(true);
 });
 
+test("a queued passkey can open the panel from its own top-level tab click only", async () => {
+  await mode.setEnabled(true);
+  api.sidePanel.open.mockRejectedValueOnce(new Error("User gesture required") as never);
+  await mode.open("popup/index.html#/fido2?sessionId=one&senderTabId=42", {
+    senderWindowId: 7,
+    singleActionKey: "vault_Fido2Popout_one",
+  });
+  api.sidePanel.open.mockClear();
+  const sender = { id: api.runtime.id, frameId: 0, tab: { id: 42, windowId: 7 } };
+  expect(
+    mode.revealPasskeyRequest("one", { ...sender, frameId: 1 } as chrome.runtime.MessageSender),
+  ).toBeUndefined();
+  expect(
+    mode.revealPasskeyRequest("one", {
+      ...sender,
+      tab: { id: 44, windowId: 7 },
+    } as chrome.runtime.MessageSender),
+  ).toBeUndefined();
+  expect(
+    mode.revealPasskeyRequest("missing", sender as chrome.runtime.MessageSender),
+  ).toBeUndefined();
+  expect(api.sidePanel.open).not.toHaveBeenCalled();
+
+  const opening = mode.revealPasskeyRequest("one", sender as chrome.runtime.MessageSender);
+  expect(api.sidePanel.open).toHaveBeenCalledWith({ windowId: 7 });
+  await opening;
+
+  await mode.closeKey("vault_Fido2Popout_one");
+  expect(mode.revealPasskeyRequest("one", sender as chrome.runtime.MessageSender)).toBeUndefined();
+});
+
 test("pending authentication blocks a mode switch until it finishes", async () => {
   await mode.setEnabled(true);
   await mode.open("popup/index.html#/fido2", { senderWindowId: 7, singleActionKey: "fido_1" });

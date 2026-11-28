@@ -467,7 +467,7 @@ export async function clickInlineUnlock(browser, website, extensionId) {
           const { model } = await session.send("DOM.getBoxModel", {
             backendNodeId: node.backendNodeId,
           });
-          return { quad: model.content };
+          return { quad: model.content, backendNodeId: node.backendNodeId };
         } catch {
           return undefined;
         }
@@ -478,6 +478,17 @@ export async function clickInlineUnlock(browser, website, extensionId) {
     const quad = button.quad;
     const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
     const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
+    const { object: control } = await session.send("DOM.resolveNode", {
+      backendNodeId: button.backendNodeId,
+    });
+    await session.send("Runtime.callFunctionOn", {
+      objectId: control.objectId,
+      functionDeclaration: `function () {
+        this.addEventListener("click", (event) => {
+          this.dataset.e2eTrustedClick = String(event.isTrusted);
+        }, { once: true });
+      }`,
+    });
     log("real-unlock-button-pointer-target", { x, y });
     await session.send("Input.dispatchMouseEvent", {
       type: "mousePressed",
@@ -494,6 +505,15 @@ export async function clickInlineUnlock(browser, website, extensionId) {
       clickCount: 1,
     });
     log("real-unlock-button-pointer-dispatched");
+    const observed = await session
+      .send("Runtime.callFunctionOn", {
+        objectId: control.objectId,
+        functionDeclaration: "function () { return this.dataset.e2eTrustedClick ?? null; }",
+        returnByValue: true,
+      })
+      .then(({ result }) => result.value)
+      .catch(() => "frame-disconnected");
+    log("real-unlock-button-pointer-observed", { trustedClick: observed });
     return {
       actualControl: true,
       closedShadowPierced: true,

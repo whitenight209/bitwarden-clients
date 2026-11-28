@@ -3829,7 +3829,8 @@ export class OverlayBackground implements OverlayBackgroundInterface {
   private handlePortOnDisconnect = (port: chrome.runtime.Port) => {
     const updateVisibilityDefaults = { isVisible: false, forceUpdate: true };
 
-    if (port.name === AutofillOverlayPort.List) {
+    // Chrome can deliver an old iframe's disconnect after its replacement connects.
+    if (port === this.inlineMenuListPort) {
       this.inlineMenuListPort = null;
       this.inlineMenuListMessageConnectorPort?.disconnect();
       this.inlineMenuListMessageConnectorPort = null;
@@ -3842,7 +3843,7 @@ export class OverlayBackground implements OverlayBackgroundInterface {
       this.inlineMenuPosition.list = null;
     }
 
-    if (port.name === AutofillOverlayPort.Button) {
+    if (port === this.inlineMenuButtonPort) {
       this.inlineMenuButtonPort = null;
       this.inlineMenuButtonMessageConnectorPort?.disconnect();
       this.inlineMenuButtonMessageConnectorPort = null;

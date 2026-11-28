@@ -63,15 +63,51 @@ describe("Messenger", () => {
     await expect(requestPromise).rejects.toThrow();
   });
 
-  it("should deliver abort signal to B when requesting abort", () => {
+  it("rejects with the RP abort reason while forwarding cancellation to B", async () => {
     const abortController = new AbortController();
-
-    void messengerA.request(createRequest(), abortController.signal);
+    const pending = messengerA.request(createRequest(), abortController.signal);
     abortController.abort();
 
     const received = handlerB.receive();
 
     expect(received[0].abortController?.signal.aborted).toBe(true);
+    await expect(pending).rejects.toBe(abortController.signal.reason);
+    expect(abortController.signal.reason.name).toBe("AbortError");
+  });
+
+  it("does not dispatch a credential request when its RP signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(messengerA.request(createRequest(), controller.signal)).rejects.toBe(
+      controller.signal.reason,
+    );
+    expect(handlerB.receive()).toHaveLength(0);
+  });
+
+  it("preserves a custom RP abort reason without waiting for the background response", async () => {
+    const controller = new AbortController();
+    const reason = new Error("RP cancelled this request");
+    const pending = messengerA.request(createRequest(), controller.signal);
+    const peer = handlerB.receive()[0];
+    controller.abort(reason);
+    peer.reject(new Error("A later background session error"));
+
+    await expect(pending).rejects.toBe(reason);
+    expect(peer.abortController?.signal.aborted).toBe(true);
+  });
+
+  it("removes the RP abort listener once a successful request has finished", async () => {
+    const controller = new AbortController();
+    const remove = jest.spyOn(controller.signal, "removeEventListener");
+    const pending = messengerA.request(createRequest(), controller.signal);
+    const peer = handlerB.receive()[0];
+    peer.respond(createResponse());
+    await pending;
+    controller.abort();
+
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    expect(peer.abortController?.signal.aborted).toBe(false);
   });
 
   describe("Messenger message validation", () => {

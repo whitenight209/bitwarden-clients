@@ -68,28 +68,35 @@ export class Messenger {
    * @returns the response from the content script
    */
   async request(request: Message, abortSignal?: AbortSignal): Promise<Message> {
+    if (abortSignal?.aborted) {
+      throw abortSignal.reason;
+    }
     const requestChannel = new MessageChannel();
     const { port1: localPort, port2: remotePort } = requestChannel;
+    let abortListener: (() => void) | undefined;
 
     try {
-      const promise = new Promise<Message>((resolve) => {
+      const promise = new Promise<Message>((resolve, reject) => {
         localPort.onmessage = (event: MessageEvent<MessageWithMetadata>) => resolve(event.data);
+        abortListener = () => {
+          localPort.postMessage({
+            metadata: { SENDER },
+            type: MessageTypes.AbortRequest,
+          });
+          // The RP owns this signal. Do not replace its reason with a later
+          // background/session error while the extension cleans up the request.
+          reject(abortSignal?.reason);
+        };
       });
-
-      const abortListener = () =>
-        localPort.postMessage({
-          metadata: { SENDER },
-          type: MessageTypes.AbortRequest,
-        });
-      abortSignal?.addEventListener("abort", abortListener);
+      if (abortListener) {
+        abortSignal?.addEventListener("abort", abortListener);
+      }
 
       this.broadcastChannel.postMessage(
         { ...request, SENDER, senderId: this.messengerId },
         remotePort,
       );
       const response = await promise;
-
-      abortSignal?.removeEventListener("abort", abortListener);
 
       if (response.type === MessageTypes.ErrorResponse) {
         const error = new Error();
@@ -99,6 +106,9 @@ export class Messenger {
 
       return response;
     } finally {
+      if (abortListener) {
+        abortSignal?.removeEventListener("abort", abortListener);
+      }
       localPort.close();
     }
   }

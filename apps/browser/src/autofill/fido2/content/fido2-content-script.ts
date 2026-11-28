@@ -14,6 +14,7 @@ import {
   MessageTypes,
 } from "./messaging/message";
 import { MessageWithMetadata, Messenger } from "./messaging/messenger";
+import { OPEN_PASSKEY_PANEL, PASSKEY_PANEL_PROMPT } from "./passkey-panel-messages";
 
 (function (globalContext) {
   const shouldExecuteContentScript =
@@ -35,6 +36,55 @@ import { MessageWithMetadata, Messenger } from "./messaging/messenger";
   messenger.handler = handleFido2Message;
   const port = chrome.runtime.connect({ name: Fido2PortName.InjectedScript });
   port.onDisconnect.addListener(handlePortOnDisconnect);
+  let panelPrompt: { sessionId: string; element: HTMLElement } | undefined;
+  if (globalContext.self === globalContext.top) {
+    // eslint-disable-next-line no-restricted-syntax -- This listener belongs to the top-level content script and is removed on disconnect.
+    chrome.runtime.onMessage.addListener(updatePanelPrompt);
+  }
+
+  function updatePanelPrompt(
+    message: { command?: string; sessionId?: string; visible?: boolean },
+    sender: chrome.runtime.MessageSender,
+  ): void {
+    if (
+      message?.command !== PASSKEY_PANEL_PROMPT ||
+      typeof message.sessionId !== "string" ||
+      sender.id !== chrome.runtime.id ||
+      sender.tab
+    ) {
+      return;
+    }
+    if (!message.visible) {
+      if (panelPrompt?.sessionId === message.sessionId) {
+        panelPrompt.element.remove();
+        panelPrompt = undefined;
+      }
+      return;
+    }
+    if (panelPrompt?.sessionId === message.sessionId) {
+      return;
+    }
+    panelPrompt?.element.remove();
+    const { document } = globalContext;
+    const element = document.createElement("div");
+    element.dataset.bitwardenPasskeyPanel = "";
+    element.style.cssText =
+      "all:initial;position:fixed;inset:12px 12px auto auto;z-index:2147483647;";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = chrome.i18n.getMessage("continuePasskeyInBitwarden");
+    button.style.cssText =
+      "background:#175ddc;color:#fff;border:2px solid #fff;border-radius:8px;padding:12px;font:600 14px system-ui;cursor:pointer;";
+    const { sessionId } = message;
+    button.addEventListener("click", (event) => {
+      if (event.isTrusted && panelPrompt?.sessionId === sessionId) {
+        void sendExtensionMessage(OPEN_PASSKEY_PANEL, { sessionId }).catch(() => {});
+      }
+    });
+    element.attachShadow({ mode: "closed" }).append(button);
+    panelPrompt = { sessionId, element };
+    document.documentElement.append(element);
+  }
 
   // Report this frame's iframe `allow=` attributes to the background so the
   // Permissions Policy gate can consult them when evaluating cross-origin
@@ -60,14 +110,14 @@ import { MessageWithMetadata, Messenger } from "./messaging/messenger";
 
     try {
       if (message.type === MessageTypes.CredentialCreationRequest) {
-        return handleCredentialCreationRequestMessage(
+        return await handleCredentialCreationRequestMessage(
           requestId,
           message.data as InsecureCreateCredentialParams,
         );
       }
 
       if (message.type === MessageTypes.CredentialGetRequest) {
-        return handleCredentialGetRequestMessage(
+        return await handleCredentialGetRequestMessage(
           requestId,
           message.data as InsecureAssertCredentialParams,
         );
@@ -224,6 +274,8 @@ import { MessageWithMetadata, Messenger } from "./messaging/messenger";
    * implemented page-script.js logic.
    */
   function handlePortOnDisconnect() {
+    chrome.runtime.onMessage.removeListener(updatePanelPrompt);
+    panelPrompt?.element.remove();
     void messenger.destroy();
   }
 })(globalThis);

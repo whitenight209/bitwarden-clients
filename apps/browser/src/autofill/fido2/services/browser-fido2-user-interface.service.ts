@@ -32,6 +32,7 @@ import { getWebExtSender } from "../../../platform/utils/web-ext-sender";
 // FIXME (PM-22628): Popup imports are forbidden in background
 // eslint-disable-next-line no-restricted-imports
 import { closeFido2Popout, openFido2Popout } from "../../../vault/popup/utils/vault-popout-window";
+import { PASSKEY_PANEL_PROMPT } from "../content/passkey-panel-messages";
 
 const BrowserFido2MessageName = "BrowserFido2UserInterfaceServiceMessage";
 
@@ -181,6 +182,7 @@ export class BrowserFido2UserInterfaceSession implements Fido2UserInterfaceSessi
   }
 
   private closed = false;
+  private panelPromptVisible = false;
   private messages$ = (BrowserApi.messageListener$(true) as Observable<BrowserFido2Message>).pipe(
     filter((msg) => msg.sessionId === this.sessionId),
     filter(
@@ -207,6 +209,7 @@ export class BrowserFido2UserInterfaceSession implements Fido2UserInterfaceSessi
         takeUntil(this.destroy$),
       )
       .subscribe(() => {
+        this.hidePanelPrompt();
         this.connected$.next(true);
       });
 
@@ -328,10 +331,26 @@ export class BrowserFido2UserInterfaceSession implements Fido2UserInterfaceSessi
   }
 
   async close() {
+    this.hidePanelPrompt();
     await closeFido2Popout(this.sessionId);
     this.closed = true;
     this.destroy$.next();
     this.destroy$.complete();
+  }
+
+  private hidePanelPrompt() {
+    if (this.panelPromptVisible) {
+      this.panelPromptVisible = false;
+      this.sendPanelPrompt(false);
+    }
+  }
+
+  private sendPanelPrompt(visible: boolean) {
+    void BrowserApi.tabSendMessage(
+      this.tab,
+      { command: PASSKEY_PANEL_PROMPT, sessionId: this.sessionId, visible },
+      { frameId: 0 },
+    );
   }
 
   private async abort(fallback = false) {
@@ -386,6 +405,16 @@ export class BrowserFido2UserInterfaceSession implements Fido2UserInterfaceSessi
       fallbackSupported: this.fallbackSupported,
       senderUrl: this.tab.requestFrameUrl,
     });
+
+    if (
+      popoutId != null &&
+      SidePanelMode.isVirtualWindow(popoutId) &&
+      !this.connected$.value &&
+      !this.abortController.signal.aborted
+    ) {
+      this.panelPromptVisible = true;
+      this.sendPanelPrompt(true);
+    }
 
     this.windowClosed$
       .pipe(

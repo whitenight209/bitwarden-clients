@@ -20,7 +20,9 @@ import { VaultSettingsService } from "@bitwarden/common/vault/abstractions/vault
 
 import { BrowserApi } from "../../../platform/browser/browser-api";
 import { ScriptInjectorService } from "../../../platform/services/abstractions/script-injector.service";
+import { SidePanelMode } from "../../../platform/side-panel/side-panel-mode";
 import { AbortManager } from "../../../vault/background/abort-manager";
+import { OPEN_PASSKEY_PANEL } from "../content/passkey-panel-messages";
 import { Fido2ContentScript, Fido2ContentScriptId } from "../enums/fido2-content-script.enum";
 import { Fido2PortName } from "../enums/fido2-port-name.enum";
 import { BrowserFido2ParentWindowReference } from "../services/browser-fido2-user-interface.service";
@@ -557,6 +559,13 @@ export class Fido2Background implements Fido2BackgroundInterface {
     sender: chrome.runtime.MessageSender,
     sendResponse: (response?: any) => void,
   ): boolean | void => {
+    if (message?.command === OPEN_PASSKEY_PANEL) {
+      if (typeof message.sessionId === "string") {
+        // Call before awaiting anything so Chrome can use the page button's click.
+        void SidePanelMode.revealPasskeyRequest(message.sessionId, sender);
+      }
+      return;
+    }
     const handler: CallableFunction | undefined = this.extensionMessageHandlers[message?.command];
     if (!handler) {
       return;

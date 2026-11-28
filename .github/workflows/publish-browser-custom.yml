@@ -81,6 +81,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: node --experimental-strip-types apps/browser/scripts/verify-custom-update.mjs prepare --version "$RELEASE_VERSION" --out .debug/custom-baseline
       - name: Reuse the verified published extension
+        id: reuse
         if: steps.version.outputs.changed == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,6 +93,7 @@ jobs:
         if: steps.version.outputs.changed == 'true'
         run: npm run build:prod:chrome --workspace @bitwarden/browser
       - name: Package full and incremental updates
+        id: package
         if: steps.version.outputs.changed == 'true'
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
@@ -104,11 +106,16 @@ jobs:
             --build apps/browser/build --out .debug/custom-release --version "$RELEASE_VERSION" "${base_args[@]}"
           node --experimental-strip-types apps/browser/scripts/verify-custom-update.mjs verify \
             --release .debug/custom-release --config apps/browser/build/custom-update-config.json "${base_args[@]}"
-      - name: Test packaged Chrome side-panel unlock with a temporary vault
-        run: |
-          node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --extension apps/browser/build
-          node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --extension apps/browser/build --preopen-panel
+      - name: Test packaged Chrome unlock with the side panel closed
+        run: node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --extension apps/browser/build
+      - name: Test packaged Chrome unlock with the side panel already open
+        if: ${{ !cancelled() && (steps.package.outcome == 'success' || steps.reuse.outcome == 'success') }}
+        run: node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --extension apps/browser/build --preopen-panel
+      - name: Test packaged Chrome passkeys through the side panel
+        if: ${{ !cancelled() && (steps.package.outcome == 'success' || steps.reuse.outcome == 'success') }}
+        run: node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --extension apps/browser/build --passkey-panel
       - name: Upload Chrome E2E reports
+        id: chrome-e2e-reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -117,6 +124,14 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+      - name: Summarize Chrome E2E runs and cases
+        if: always()
+        env:
+          CHROME_E2E_ARTIFACT_URL: ${{ steps.chrome-e2e-reports.outputs.artifact-url }}
+          CHROME_E2E_ARTIFACT_NAME: chrome-e2e-${{ github.run_id }}
+        run: |
+          node e2e/infra/chrome/summarize-reports.mjs \
+            --expected closed-panel --expected preopened-locked-panel --expected passkey-panel
       - name: Upload verified release assets
         if: steps.version.outputs.changed == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

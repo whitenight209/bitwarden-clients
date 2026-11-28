@@ -12,6 +12,7 @@ const options = {
   forceFailure: false,
   keepVm: false,
   preopenPanel: false,
+  passkeyPanel: false,
   setupOnly: false,
   suite: "authenticated",
   provider: process.platform === "darwin" ? "colima" : "docker",
@@ -22,6 +23,7 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === "--force-failure") options.forceFailure = true;
   else if (args[i] === "--keep-vm") options.keepVm = true;
   else if (args[i] === "--preopen-panel") options.preopenPanel = true;
+  else if (args[i] === "--passkey-panel") options.passkeyPanel = true;
   else if (args[i] === "--setup-only") options.setupOnly = true;
   else if (
     args[i] === "--suite" &&
@@ -32,13 +34,21 @@ for (let i = 0; i < args.length; i++) {
     options.provider = args[++i];
   else if (args[i] === "--help") {
     console.log(
-      "Usage: node e2e/infra/chrome/run.mjs [--setup-only] [--extension DIR] [--suite authenticated|environment|playwright] [--provider colima|docker] [--preopen-panel] [--force-failure] [--keep-vm]",
+      "Usage: node e2e/infra/chrome/run.mjs [--setup-only] [--extension DIR] [--suite authenticated|environment|playwright] [--provider colima|docker] [--preopen-panel] [--passkey-panel] [--force-failure] [--keep-vm]",
     );
     process.exit(0);
   } else {
     console.error(`Unknown or incomplete option: ${args[i]}`);
     process.exit(2);
   }
+}
+
+if (
+  options.passkeyPanel &&
+  (options.setupOnly || options.preopenPanel || options.suite !== "authenticated")
+) {
+  console.error("--passkey-panel requires the authenticated E2E suite without --preopen-panel.");
+  process.exit(2);
 }
 
 if (options.setupOnly && (options.preopenPanel || options.forceFailure)) {
@@ -99,6 +109,7 @@ const report = {
   extension: options.setupOnly ? undefined : options.extension,
   intentionallyFailing: options.forceFailure,
   preopenPanel: options.preopenPanel,
+  passkeyPanel: options.passkeyPanel,
   steps: [],
   cleanup: [],
 };
@@ -450,6 +461,8 @@ async function runE2E() {
         `E2E_FORCE_FAILURE=${options.forceFailure ? "1" : "0"}`,
         "--env",
         `E2E_PREOPEN_LOCKED_PANEL=${options.preopenPanel ? "1" : "0"}`,
+        "--env",
+        `E2E_PASSKEY_PANEL=${options.passkeyPanel ? "1" : "0"}`,
         ...(needsVault
           ? [
               "--network",

@@ -27,10 +27,14 @@ jobs:
       - name: Unlock from a web field with the side panel already open
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --preopen-panel
+      - name: Register and use a passkey through the native side panel
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --passkey-panel
       - name: Run browser Playwright tests against Vaultwarden
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node e2e/infra/chrome/run.mjs --provider docker --suite playwright
       - name: Upload Chrome E2E reports
+        id: chrome-e2e-reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -39,3 +43,11 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+      - name: Summarize Chrome E2E runs and cases
+        if: always()
+        env:
+          CHROME_E2E_ARTIFACT_URL: ${{ steps.chrome-e2e-reports.outputs.artifact-url }}
+          CHROME_E2E_ARTIFACT_NAME: chrome-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          node e2e/infra/chrome/summarize-reports.mjs \
+            --expected closed-panel --expected preopened-locked-panel --expected passkey-panel --expected playwright

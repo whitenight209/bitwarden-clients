@@ -37,6 +37,12 @@ node e2e/infra/chrome/run.mjs --preopen-panel
 
 기본 실행은 닫힌 패널에서 웹 버튼으로 시작한다. `--preopen-panel`은 준비 단계에서 실제 툴바 동작으로 잠금 패널을 먼저 열고 같은 웹 버튼을 검증한다. 두 경우 모두 요청을 반복한 뒤 같은 창의 새 잠금 패널 하나와 빈 비밀번호 입력란, OS 키 입력을 확인한다. 이미 열린 잠금 화면은 완전히 종료한 뒤 다시 열어 Chrome의 키보드 포커스를 받는다. 입력 중이던 비밀번호는 초기화하며 복사하거나 저장하지 않는다.
 
+패스키 회귀 테스트는 서버에 로그인한 상태에서 사용자 동작이 없는 실제 WebAuthn 등록·로그인 요청을 보낸다. 패널이 닫혀 있으면 웹페이지의 Bitwarden 버튼으로 열고, 이미 열려 있으면 같은 패널을 사용한다. 패널에서 선택해 원래 사이트의 요청을 완료하고, 사이트에서 취소한 뒤 다음 요청을 처리할 수 있는지 확인한다.
+
+```sh
+node e2e/infra/chrome/run.mjs --passkey-panel
+```
+
 실행별 테스트 프로필에 개발자 모드를 켜고 Chrome 시작 시 확장 폴더를 로드한다. 수동 설치의 개발자 모드 조건을 재현한다. 개발자 모드가 없으면 Chrome은 계정 잠금 중 `runtime.reload()` 뒤 확장을 `unsupportedDeveloperExtension` 사유로 비활성화할 수 있다.
 
 환경 기능만 검사하는 명령은 다음과 같다.
@@ -67,6 +73,8 @@ node e2e/infra/chrome/run.mjs --provider docker
 계정 준비에는 Vaultwarden 등록 API와 공식 Bitwarden SDK의 암호화 함수를 사용한다. 고정한 Vaultwarden이 지원하는 V1 계정 키 형식으로 등록하며, 가입 웹 화면 자체는 테스트하지 않는다. 등록 API 성공 이후 실제 확장 로그인과 잠금 해제로 계정의 유효성을 확인한다.
 
 검증 대상은 실제 확장 로그인, 설정에서 사이드 패널 활성화, 계정 잠금, 웹 입력 필드의 실제 잠금 해제 버튼, 네이티브 `SIDE_PANEL`의 마스터 비밀번호 입력 포커스, OS 키 입력과 실제 잠금 해제다. 잠금 해제 버튼을 누른 뒤에는 패널 클릭·`focus()`·창 활성화로 포커스를 보정하지 않는다.
+
+생성기는 잠금·해제와 패널 열림·닫힘의 네 상태에서 접근을 확인한다. 잠긴 상태는 실제 잠금 해제를 거치고, 해제된 상태는 실제 툴바와 패널 메뉴를 사용한다. 생성·재생성 결과는 길이와 선택한 문자 그룹으로 검사한다.
 
 계정 잠금은 보안을 위해 확장 프로세스를 재시작한다. 잠금 화면 표시와 재시작 완료를 구분하고 실제 worker 교체를 확인한다. Worker 진단에는 직접 CDP 요청과 제한 시간을 사용하며, 실패는 추가 진단 전에 먼저 보고서에 저장한다.
 
@@ -104,7 +112,7 @@ node e2e/infra/chrome/run.mjs --suite environment --force-failure
 
 동일 작업 공간에서는 실행 잠금으로 중복 실행을 막는다. SIGINT·SIGTERM은 정리 경로로 처리한다.
 
-`Chrome Extension E2E` 워크플로는 Actions에서 수동 실행할 수 있다. 빌드 후 Vaultwarden을 사용하는 두 잠금 해제 시나리오와 브라우저 Playwright 스위트를 실행하고 보고서를 업로드한다. `Chrome Extension Release`도 Linux Docker에서 패키징한 확장으로 인증 스위트를 실행하며, E2E가 성공해야 배포한다.
+`Chrome Extension E2E` 워크플로는 Actions에서 수동 실행할 수 있다. 빌드 후 Vaultwarden을 사용하는 두 잠금 해제 시나리오, 패스키, 브라우저 Playwright를 실행한다. `Chrome Extension Release`도 Linux Docker에서 패키징한 확장으로 잠금 해제·생성기와 패스키를 검증한다. 두 워크플로의 실행 **Summary**에서 각 테스트와 정리 결과를 볼 수 있으며, HTML과 로그는 Summary에 연결된 아티팩트에서 내려받을 수 있다.
 
 ## 검증 범위
 
