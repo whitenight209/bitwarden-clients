@@ -1,0 +1,38 @@
+name: Chrome Extension E2E
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chrome-e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+      - run: npm ci
+      - name: Build Chrome extension
+        id: build
+        run: npm run build:prod:chrome --workspace @bitwarden/browser
+      - name: Unlock from a web field with the side panel closed
+        run: node e2e/infra/chrome/run.mjs --provider docker --suite authenticated
+      - name: Unlock from a web field with the side panel already open
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --preopen-panel
+      - name: Upload Chrome E2E reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chrome-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .debug/chrome-e2e/*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
