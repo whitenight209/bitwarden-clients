@@ -426,6 +426,8 @@ async function runE2E() {
         "WEB_VAULT_ENABLED=true",
         "--env",
         "DISABLE_ICON_DOWNLOAD=true",
+        // Every Playwright case logs in through the same isolated loopback IP.
+        ...(playwright ? ["--env", "LOGIN_RATELIMIT_MAX_BURST=40"] : []),
         serverImage,
       ]);
       await docker(["start", serverName]);

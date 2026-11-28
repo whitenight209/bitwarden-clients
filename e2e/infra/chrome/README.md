@@ -80,7 +80,7 @@ node e2e/infra/chrome/run.mjs --provider docker
 
 `environment` 스위트는 계정 없이 Chrome 실행, OS 키 입력, 실제 네이티브 사이드 패널과 로그인 이메일 입력을 확인한다. 이 결과로 인증·비밀번호 잠금 해제 회귀가 검증됐다고 판단하지 않는다.
 
-기존 브라우저 Playwright 테스트를 같은 임시 Vaultwarden 환경에서 실행하려면 아래 명령을 사용한다. 마스터 비밀번호 로그인, PIN, 사이드 패널을 포함하고 다중 계정 PIN 테스트를 위해 임시 계정 두 개를 준비한다. `npm run build:prod:chrome`으로 만든 확장 폴더를 사용한다.
+기존 브라우저 Playwright 테스트를 같은 임시 Vaultwarden 환경에서 실행하려면 아래 명령을 사용한다. 마스터 비밀번호 로그인, PIN, 사이드 패널을 포함하고 다중 계정 PIN 테스트를 위해 임시 계정 두 개를 준비한다. 각 케이스가 같은 루프백 IP에서 로그인하므로 이 스위트의 임시 서버는 동시에 허용하는 로그인 요청 수를 늘린다. `npm run build:prod:chrome`으로 만든 확장 폴더를 사용한다.
 
 ```sh
 node e2e/infra/chrome/run.mjs --suite playwright
@@ -112,7 +112,7 @@ node e2e/infra/chrome/run.mjs --suite environment --force-failure
 
 동일 작업 공간에서는 실행 잠금으로 중복 실행을 막는다. SIGINT·SIGTERM은 정리 경로로 처리한다.
 
-`Chrome Extension E2E` 워크플로는 Actions에서 수동 실행할 수 있다. 빌드 후 Vaultwarden을 사용하는 두 잠금 해제 시나리오, 패스키, 브라우저 Playwright를 실행한다. `Chrome Extension Release`도 Linux Docker에서 패키징한 확장으로 잠금 해제·생성기와 패스키를 검증한다. 두 워크플로의 실행 **Summary**에서 각 테스트와 정리 결과를 볼 수 있으며, HTML과 로그는 Summary에 연결된 아티팩트에서 내려받을 수 있다.
+`Chrome Extension E2E` 워크플로는 Actions에서 수동 실행할 수 있다. 같은 빌드를 사용해 두 잠금 해제 시나리오, 패스키, 브라우저 Playwright를 각각의 작업으로 병렬 실행한다. `Chrome Extension Release`도 Linux Docker에서 패키징한 확장으로 잠금 해제·생성기와 패스키를 검증한다. 두 워크플로의 실행 **Summary**에서 각 테스트와 정리 결과를 볼 수 있으며, HTML과 로그는 Summary에 연결된 아티팩트에서 내려받을 수 있다.
 
 ## 검증 범위
 

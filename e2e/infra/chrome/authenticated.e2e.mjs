@@ -407,17 +407,28 @@ async function diagnose(extensionId) {
   return result;
 }
 
-async function verifyPasswordGenerator(session) {
-  async function generator(operation) {
+async function evaluateGeneratorPanel(session, expression, awaitPromise = false) {
+  try {
     const response = await session.send("Runtime.evaluate", {
-      expression: `(${operation.toString()})()`,
+      expression,
+      awaitPromise,
       returnByValue: true,
     });
-    if (response.exceptionDetails) {
-      throw new Error("Password generator evaluation failed.");
-    }
+    if (response.exceptionDetails) throw new Error("Password generator panel evaluation failed.");
     return response.result.value;
+  } catch (error) {
+    if (
+      /Execution context was destroyed|Cannot find context with specified id|Inspected target navigated or closed/i.test(
+        error.message,
+      )
+    )
+      return undefined;
+    throw error;
   }
+}
+
+async function verifyPasswordGenerator(session) {
+  const generator = (operation) => evaluateGeneratorPanel(session, `(${operation.toString()})()`);
   await poll(
     () =>
       generator(() => {
@@ -475,7 +486,7 @@ async function verifyPasswordGenerator(session) {
           matchesCharacterOptions,
         };
       }),
-    (value) => value.length === 24 && value.changed && value.matchesCharacterOptions,
+    (value) => value?.length === 24 && value.changed && value.matchesCharacterOptions,
     "Regenerated password respects length and character options",
   );
   await generator(() => delete globalThis.generatorE2ePrevious);
@@ -501,27 +512,29 @@ async function verifyUnlockedGeneratorEntrypoints(popup, extensionId) {
   secretInputActive = true;
   try {
     await poll(
-      async () => {
-        const response = await session
-          .send("Runtime.evaluate", {
-            expression: "chrome.windows.getCurrent().then(window => window.id)",
-            awaitPromise: true,
-            returnByValue: true,
-          })
-          .catch(() => null);
-        return response?.result?.value;
-      },
+      () =>
+        evaluateGeneratorPanel(
+          session,
+          "globalThis.chrome?.windows?.getCurrent?.().then(window => window.id)",
+          true,
+        ),
       (id) => id === owner,
       "Native generator panel belongs to the requesting window",
     );
+    const navigateFromMenu = (label, route = "") =>
+      evaluateGeneratorPanel(
+        session,
+        `(() => {
+      if (!location.hash.startsWith(${JSON.stringify(route)})) return false;
+      const link = [...document.querySelectorAll('footer nav button[role=link]')]
+        .find(button => button.textContent.trim() === ${JSON.stringify(label)});
+      if (!link) return false;
+      link.click();
+      return true;
+    })()`,
+      );
     await poll(
-      async () => {
-        const response = await session.send("Runtime.evaluate", {
-          expression: `(() => { const link = [...document.querySelectorAll('footer nav button[role=link]')].find(button => button.textContent.trim() === 'Generator'); if (!link) return false; link.click(); return true; })()`,
-          returnByValue: true,
-        });
-        return response.result.value;
-      },
+      () => navigateFromMenu("Generator"),
       Boolean,
       "Open the generator from the panel navigation",
     );
@@ -531,24 +544,12 @@ async function verifyUnlockedGeneratorEntrypoints(popup, extensionId) {
     );
     setPhase("unlocked-existing-panel-returns-to-generator");
     await poll(
-      async () => {
-        const response = await session.send("Runtime.evaluate", {
-          expression: `(() => { const link = [...document.querySelectorAll('footer nav button[role=link]')].find(button => button.textContent.trim() === 'Vault'); if (!link) return false; link.click(); return true; })()`,
-          returnByValue: true,
-        });
-        return response.result.value;
-      },
+      () => navigateFromMenu("Vault"),
       Boolean,
       "Return to the vault inside the same native panel",
     );
     await poll(
-      async () => {
-        const response = await session.send("Runtime.evaluate", {
-          expression: `(() => { if (!location.hash.startsWith('#/tabs/vault')) return false; const link = [...document.querySelectorAll('footer nav button[role=link]')].find(button => button.textContent.trim() === 'Generator'); if (!link) return false; link.click(); return true; })()`,
-          returnByValue: true,
-        });
-        return response.result.value;
-      },
+      () => navigateFromMenu("Generator", "#/tabs/vault"),
       Boolean,
       "Reopen the generator from the vault in the same native panel",
     );
