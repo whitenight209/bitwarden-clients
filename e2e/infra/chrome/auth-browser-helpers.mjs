@@ -428,6 +428,7 @@ export async function clickInlineUnlock(browser, website, extensionId) {
   });
   const owner = await browser.target().createCDPSession();
   let documentHandle;
+  let frameElement;
   try {
     const { targetInfos } = await owner.send("Target.getTargets");
     log("fresh-frame-target-observation", {
@@ -464,10 +465,10 @@ export async function clickInlineUnlock(browser, website, extensionId) {
         }
         if (!node) return undefined;
         try {
-          const { model } = await session.send("DOM.getBoxModel", {
+          await session.send("DOM.getBoxModel", {
             backendNodeId: node.backendNodeId,
           });
-          return { quad: model.content, backendNodeId: node.backendNodeId };
+          return node;
         } catch {
           return undefined;
         }
@@ -475,40 +476,38 @@ export async function clickInlineUnlock(browser, website, extensionId) {
       Boolean,
       "Visible real inline Unlock button",
     );
-    const quad = button.quad;
-    const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4;
-    const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
     const { object: control } = await session.send("DOM.resolveNode", {
       backendNodeId: button.backendNodeId,
     });
-    await session.send("Runtime.callFunctionOn", {
+    const { result: point } = await session.send("Runtime.callFunctionOn", {
       objectId: control.objectId,
       functionDeclaration: `function () {
         this.addEventListener("click", (event) => {
-          this.dataset.e2eTrustedClick = String(event.isTrusted);
+          this.__inlineUnlockTrustedClick = event.isTrusted;
         }, { once: true });
+        const rect = this.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
       }`,
+      returnByValue: true,
     });
+    // Pointer coordinates belong to the website's viewport. Dispatching local coordinates
+    // on an OOPIF session can miss after Chrome resizes the website for the side panel.
+    frameElement = await frame.frameElement();
+    const frameBox = await frameElement?.boundingBox();
+    if (!frameBox) throw new Error("Visible inline menu iframe has no website bounds");
+    const border = await frameElement.evaluate((element) => ({
+      x: element.clientLeft,
+      y: element.clientTop,
+    }));
+    const x = frameBox.x + border.x + point.value.x;
+    const y = frameBox.y + border.y + point.value.y;
     log("real-unlock-button-pointer-target", { x, y });
-    await session.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x,
-      y,
-      button: "left",
-      clickCount: 1,
-    });
-    await session.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x,
-      y,
-      button: "left",
-      clickCount: 1,
-    });
+    await website.mouse.click(x, y);
     log("real-unlock-button-pointer-dispatched");
     const observed = await session
       .send("Runtime.callFunctionOn", {
         objectId: control.objectId,
-        functionDeclaration: "function () { return this.dataset.e2eTrustedClick ?? null; }",
+        functionDeclaration: "function () { return this.__inlineUnlockTrustedClick ?? null; }",
         returnByValue: true,
       })
       .then(({ result }) => result.value)
@@ -520,6 +519,7 @@ export async function clickInlineUnlock(browser, website, extensionId) {
       dynamicFrameOrigin: !frameUrl.startsWith(`chrome-extension://${extensionId}/`),
     };
   } finally {
+    await frameElement?.dispose().catch(() => {});
     await documentHandle?.dispose().catch(() => {});
     await owner.detach().catch(() => {});
   }
