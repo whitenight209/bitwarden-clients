@@ -27,6 +27,9 @@ jobs:
       - name: Unlock from a web field with the side panel already open
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --preopen-panel
+      - name: Run browser Playwright tests against Vaultwarden
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node e2e/infra/chrome/run.mjs --provider docker --suite playwright
       - name: Upload Chrome E2E reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

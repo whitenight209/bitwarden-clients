@@ -434,6 +434,23 @@ export class SidePanelMode {
     return documentUrl.href;
   }
 
+  /** Native view ports may omit documentId. Match their committed URL to a unique Chrome context. */
+  static resolveNativeContext(
+    sender: chrome.runtime.MessageSender,
+    contexts: readonly chrome.runtime.ExtensionContext[],
+  ): chrome.runtime.ExtensionContext | undefined {
+    const token = !sender.documentId && !sender.tab && SidePanelMode.documentToken(sender.url);
+    const identity = token ? SidePanelMode.documentIdentityUrl(sender.url) : undefined;
+    const matching = contexts.filter(
+      (context) =>
+        context.contextType === "SIDE_PANEL" &&
+        (sender.documentId
+          ? context.documentId === sender.documentId
+          : !!identity && SidePanelMode.documentIdentityUrl(context.documentUrl) === identity),
+    );
+    return matching.length === 1 ? matching[0] : undefined;
+  }
+
   /** Run before Angular renders a native panel, so its identity is committed before any input. */
   static prepareViewDocument(win: Window = globalThis.window): boolean {
     return !SidePanelMode.inPanel(win) || !!SidePanelMode.preparePanelDocument(win);
@@ -774,17 +791,7 @@ export class SidePanelMode {
       const documentToken = SidePanelMode.documentToken(sender.url);
       // Chrome can omit documentId for native extension views. Bind that port to its
       // unique document URL, verified against actual SIDE_PANEL contexts, before trusting its owner.
-      const matching = contexts.filter(
-        (item) =>
-          item.contextType === "SIDE_PANEL" &&
-          (sender.documentId
-            ? item.documentId === sender.documentId
-            : !sender.tab &&
-              !!documentToken &&
-              SidePanelMode.documentIdentityUrl(item.documentUrl) ===
-                SidePanelMode.documentIdentityUrl(sender.url)),
-      );
-      const context = matching.length === 1 ? matching[0] : undefined;
+      const context = SidePanelMode.resolveNativeContext(sender, contexts);
       if (disconnected) {
         return;
       }

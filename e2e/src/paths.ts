@@ -9,5 +9,6 @@ export const DEBUG_DIR = resolve(REPO_ROOT, ".debug");
 export const E2E_STATE_DIR = resolve(DEBUG_DIR, "e2e");
 export const CHROME_PROFILE_DIR = resolve(E2E_STATE_DIR, "chrome-profile");
 
-export const BROWSER_BUILD_DIR = resolve(REPO_ROOT, "apps/browser/build");
+export const BROWSER_BUILD_DIR =
+  process.env.E2E_BROWSER_BUILD_DIR ?? resolve(REPO_ROOT, "apps/browser/build");
 export const DESKTOP_BUILD_DIR = resolve(REPO_ROOT, "apps/desktop/build");

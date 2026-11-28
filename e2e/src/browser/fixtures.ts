@@ -1,4 +1,4 @@
-import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { BrowserContext, CDPSession, Page, chromium, expect, test as base } from "@playwright/test";
@@ -72,17 +72,33 @@ async function launch(
   rmSync(CHROME_PROFILE_DIR, { recursive: true, force: true });
   const extensionDir =
     nativeMessaging === NativeMessaging.Granted ? grantedBuild() : BROWSER_BUILD_DIR;
+  const executablePath = process.env.E2E_CHROME_EXECUTABLE;
+  const certificatePin = process.env.E2E_TLS_SPKI;
+  if (executablePath) {
+    const preferences = join(CHROME_PROFILE_DIR, "Default");
+    mkdirSync(preferences, { recursive: true });
+    writeFileSync(
+      join(preferences, "Preferences"),
+      JSON.stringify({ extensions: { ui: { developer_mode: true } } }),
+    );
+  }
 
   return chromium.launchPersistentContext(CHROME_PROFILE_DIR, {
-    channel: "chromium",
+    ...(executablePath
+      ? { executablePath, ignoreDefaultArgs: ["--disable-extensions"] }
+      : { channel: "chromium" }),
     headless: false,
     // The local dev server serves a self-signed certificate.
-    ignoreHTTPSErrors: IS_DEV_SERVER,
+    ignoreHTTPSErrors: IS_DEV_SERVER && !certificatePin,
     // Lets suites that also drive the web vault use relative URLs in this context.
     baseURL,
-    recordVideo: { dir: recordVideoDir },
+    recordVideo: executablePath ? undefined : { dir: recordVideoDir },
     env: { ...process.env, BITWARDEN_IPC_SOCKET_DIR: IPC_SOCKET_DIR },
-    args: [`--load-extension=${extensionDir}`, `--disable-extensions-except=${extensionDir}`],
+    args: [
+      `--load-extension=${extensionDir}`,
+      `--disable-extensions-except=${extensionDir}`,
+      ...(certificatePin ? [`--ignore-certificate-errors-spki-list=${certificatePin}`] : []),
+    ],
   });
 }
 
@@ -246,12 +262,15 @@ export const test = base.extend<{
   context: async ({ baseURL, nativeMessaging }, use, testInfo) => {
     // Playwright traces this context itself: it comes from its instrumented `chromium`.
     const context = await launch(baseURL, videoDir(testInfo), nativeMessaging);
-    await enableDeveloperMode(context);
-
-    await use(context);
-
-    await context.close();
-    pruneVideo(testInfo);
+    try {
+      if (!process.env.E2E_CHROME_EXECUTABLE) {
+        await enableDeveloperMode(context);
+      }
+      await use(context);
+    } finally {
+      await context.close();
+      pruneVideo(testInfo);
+    }
   },
   popup: async ({ context }, use) => {
     const page = await context.newPage();

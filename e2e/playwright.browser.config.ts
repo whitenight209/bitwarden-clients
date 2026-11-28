@@ -6,5 +6,5 @@ export default defineConfig({
   ...baseConfig,
   testDir: "./tests/browser",
   // Logs into the web vault's server, so it must be running too.
-  webServer: webVaultServer,
+  webServer: process.env.E2E_TLS_SPKI ? undefined : webVaultServer,
 });

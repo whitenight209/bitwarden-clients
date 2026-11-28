@@ -234,6 +234,13 @@ test("unconfigured builds never query GitHub on unlock", async () => {
   expect(source.findRemoteUpdate).not.toHaveBeenCalled();
 });
 
+test("a missing local config is unconfigured when Chrome rejects the fetch", async () => {
+  (fetch as jest.Mock).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  await agent.checkAfterUnlock();
+  expect((await send("state")).status).toBe("unconfigured");
+  expect(source.findRemoteUpdate).not.toHaveBeenCalled();
+});
+
 function screen(documentId: string, ready = true, reason?: string) {
   let receive!: (body: any) => void;
   const closed: Array<() => void> = [];
@@ -280,6 +287,46 @@ test("apply prepares an already-open side panel without any permanent update por
   expect(files.applyUpdateFiles).toHaveBeenCalledTimes(1);
   expect(panel.postMessage).toHaveBeenCalledWith({ type: "release" });
   expect(panel.disconnect).toHaveBeenCalledTimes(1);
+});
+
+test("apply accepts a native side panel whose port has no documentId", async () => {
+  values.set("directory", { queryPermission: async () => "granted" });
+  const panel = screen("panel");
+  const url =
+    "chrome-extension://test/popup/index.html?uilocation=sidepanel&sidePanelDocument=12345678-1234-1234-1234-123456789abc";
+  delete panel.sender!.documentId;
+  panel.sender!.url = url;
+  jest
+    .mocked(chrome.runtime.getContexts)
+    .mockResolvedValue([
+      { contextType: "SIDE_PANEL", documentId: "panel", documentUrl: url + "#/custom-updates" },
+    ] as never);
+  jest.mocked(chrome.runtime.sendMessage).mockImplementation(async () => {
+    connect(panel);
+  });
+
+  expect((await send("apply")).error).toBeUndefined();
+  expect(files.applyUpdateFiles).toHaveBeenCalledTimes(1);
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
+test("a prepared screen disconnected before the final context check blocks file writes", async () => {
+  values.set("directory", { queryPermission: async () => "granted" });
+  const panel = screen("panel");
+  jest.mocked(chrome.runtime.getContexts).mockResolvedValue([
+    {
+      documentId: "panel",
+      documentUrl: "chrome-extension://test/popup/index.html?uilocation=sidepanel",
+    },
+  ] as never);
+  jest.mocked(chrome.runtime.sendMessage).mockImplementation(async () => {
+    connect(panel);
+    panel.disconnect();
+  });
+
+  expect((await send("apply")).status).toBe("waiting");
+  expect(files.applyUpdateFiles).not.toHaveBeenCalled();
+  expect(reload).not.toHaveBeenCalled();
 });
 
 test("every open document must prepare, including a dirty form in another window", async () => {
@@ -368,6 +415,35 @@ test("permission renewed after reload completes verification and deletes backup 
   expect(result.status).toBe("current");
   expect(result.recoveryAvailable).toBe(false);
   expect(values.has("journal")).toBe(false);
+  expect(reload).not.toHaveBeenCalled();
+});
+
+test("a verified running installation finishes cleanup after Chrome revokes temporary access", async () => {
+  const manifest = new Uint8Array([1, 2, 3]);
+  const { sha256 } = await import("./update-contract");
+  const target = encode({
+    ...inventory("1.0.0.1"),
+    files: { "manifest.json": { size: manifest.byteLength, sha256: await sha256(manifest) } },
+  });
+  const journal = {
+    phase: "pendingReload",
+    fromVersion: "1.0.0.0",
+    toVersion: "1.0.0.1",
+    target,
+  };
+  values.set("directory", { queryPermission: async () => "prompt" });
+  values.set("journal", journal);
+  values.set("backups", [journal]);
+  await agent.initializeBackground();
+  (fetch as jest.Mock)
+    .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => target.buffer })
+    .mockResolvedValueOnce({ ok: true, arrayBuffer: async () => manifest.buffer });
+
+  await agent.markHealthy();
+  expect(files.verifyDirectory).not.toHaveBeenCalled();
+  expect(values.has("journal")).toBe(false);
+  expect(values.has("backups")).toBe(false);
+  expect((await send("state")).folderPermission).toBe("prompt");
   expect(reload).not.toHaveBeenCalled();
 });
 

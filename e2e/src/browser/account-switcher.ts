@@ -1,4 +1,4 @@
-import { BrowserContext, Page } from "@playwright/test";
+import { BrowserContext, Page, expect } from "@playwright/test";
 
 import { LockScreen } from "../lock-screen";
 
@@ -14,7 +14,7 @@ const CLOSE_TIMEOUT_MS = 60_000;
 
 /** Locks the active account from the popup's account switcher. */
 export async function lockNow(popup: Page) {
-  await popup.getByTestId(CURRENT_ACCOUNT_BUTTON).click();
+  await openAccountSwitcher(popup);
   await popup.getByTestId(LOCK_NOW_BUTTON).click();
 }
 
@@ -33,7 +33,10 @@ export async function lockAndReopen(context: BrowserContext, popup: Page): Promi
 
 /** Opens the popup's account switcher, where the account options and the account list live. */
 async function openAccountSwitcher(popup: Page) {
-  await popup.getByTestId(CURRENT_ACCOUNT_BUTTON).click();
+  const avatar = popup.getByTestId(CURRENT_ACCOUNT_BUTTON).filter({ visible: true });
+  // Route transitions can briefly leave both the incoming and outgoing headers visible.
+  await expect(avatar).toHaveCount(1);
+  await avatar.click();
 }
 
 /** Starts signing in another account from the popup's account switcher. */

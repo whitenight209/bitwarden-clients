@@ -9,6 +9,7 @@ import {
   fileChanges,
   sha256,
   validateInventory,
+  verifyDigest,
 } from "./update-contract";
 import {
   UpdateDirectory,
@@ -75,8 +76,7 @@ export class CustomUpdateAgent {
   private static state: CustomUpdateStatus;
   private static bootstrapped = false;
   private static preparation?: {
-    id: string;
-    expected: Set<string>;
+    pages: readonly chrome.runtime.ExtensionContext[];
     connected: (view: UpdateView) => void;
   };
 
@@ -161,18 +161,24 @@ export class CustomUpdateAgent {
     });
     // eslint-disable-next-line no-restricted-syntax -- Registered once in the background worker only.
     chrome.runtime.onConnect.addListener((port) => {
-      if (port.name !== CUSTOM_UPDATE_PORT || !port.sender?.documentId || !internal(port.sender)) {
+      const sender = port.sender;
+      if (port.name !== CUSTOM_UPDATE_PORT || !sender || !internal(sender)) {
         return;
       }
       const preparation = CustomUpdateAgent.preparation;
+      const documentId =
+        sender.documentId ??
+        (preparation && SidePanelMode.resolveNativeContext(sender, preparation.pages)?.documentId);
       if (
-        !preparation?.expected.has(port.sender.documentId) ||
-        CustomUpdateAgent.views.some((view) => view.documentId === port.sender!.documentId)
+        !preparation ||
+        !documentId ||
+        !preparation.pages.some((page) => page.documentId === documentId) ||
+        CustomUpdateAgent.views.some((view) => view.documentId === documentId)
       ) {
         port.disconnect();
         return;
       }
-      const view: UpdateView = { port, documentId: port.sender.documentId, ready: new Map() };
+      const view: UpdateView = { port, documentId, ready: new Map() };
       CustomUpdateAgent.views.push(view);
       port.onMessage.addListener((message) => {
         if (message?.type === "prepared") {
@@ -194,8 +200,11 @@ export class CustomUpdateAgent {
     try {
       // Remove the previous periodic updater without scheduling another background task.
       await chrome.alarms.clear(LEGACY_ALARM);
-      const response = await fetch(chrome.runtime.getURL(CONFIG_FILE));
-      if (!response.ok) {
+      // Chrome rejects fetch when an unpacked development build omits this local file.
+      const response = await fetch(chrome.runtime.getURL(CONFIG_FILE)).catch(
+        (): undefined => undefined,
+      );
+      if (!response?.ok) {
         await CustomUpdateAgent.publish();
         return;
       }
@@ -330,30 +339,55 @@ export class CustomUpdateAgent {
       if (!root) {
         return;
       }
-      if ((await root.queryPermission({ mode: "readwrite" })) !== "granted") {
-        await CustomUpdateAgent.publish({
-          status: "waiting",
-          recoveryAvailable: true,
-          error: "Allow access to the saved installation folder to verify and finish this update.",
-        });
-        return;
-      }
-      await verifyDirectory(
-        root,
-        validateInventory(
-          JSON.parse(new TextDecoder().decode(journal.target)),
-          CustomUpdateAgent.config!,
-        ),
+      const inventory = validateInventory(
+        JSON.parse(new TextDecoder().decode(journal.target)),
+        CustomUpdateAgent.config!,
       );
+      const folderPermission = await root.queryPermission({ mode: "readwrite" });
+      if (folderPermission === "granted") {
+        await verifyDirectory(root, inventory);
+      } else {
+        try {
+          // The file writer already verified the complete folder before saving pendingReload.
+          // Chrome may revoke its temporary folder grant during reload. Verify the new running
+          // extension's marker and files directly so completion needs no second write grant.
+          await verifyDigest(await CustomUpdateAgent.readInstalledResource(INSTALLED_FILE), {
+            size: journal.target.byteLength,
+            sha256: await sha256(journal.target),
+          });
+          for (const [path, expected] of Object.entries(inventory.files)) {
+            await verifyDigest(await CustomUpdateAgent.readInstalledResource(path), expected);
+          }
+        } catch {
+          await CustomUpdateAgent.publish({
+            status: "waiting",
+            folderPermission,
+            recoveryAvailable: true,
+            error:
+              "Allow access to the saved installation folder to verify and finish this update.",
+          });
+          return;
+        }
+      }
       await setUpdateState("highestVersion", journal.toVersion);
       await finishUpdate(journal, "applied");
       await CustomUpdateAgent.publish({
         status: "current",
+        folderPermission,
         error: undefined,
         recoveryAvailable: false,
         history: (await getUpdateState<UpdateHistoryEntry[]>("history")) ?? [],
       });
     }
+  }
+
+  private static async readInstalledResource(path: string): Promise<Uint8Array> {
+    const url = chrome.runtime.getURL(path.split("/").map(encodeURIComponent).join("/"));
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Could not read installed resource: ${path}.`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   private static releaseViews(): void {
@@ -392,8 +426,7 @@ export class CustomUpdateAgent {
       complete = resolve;
     });
     CustomUpdateAgent.preparation = {
-      id,
-      expected: new Set(pages.map((page) => page.documentId)),
+      pages,
       connected: (view) => {
         view.ready.set(id, (result) => {
           results.set(view.documentId, result);
@@ -422,7 +455,10 @@ export class CustomUpdateAgent {
       );
       for (const page of current) {
         const result = results.get(page.documentId);
-        if (!result?.ready) {
+        if (
+          !result?.ready ||
+          !CustomUpdateAgent.views.some((view) => view.documentId === page.documentId)
+        ) {
           CustomUpdateAgent.releaseViews();
           return (
             result?.reason ??

@@ -12,6 +12,7 @@ const options = {
   forceFailure: false,
   keepVm: false,
   preopenPanel: false,
+  setupOnly: false,
   suite: "authenticated",
   provider: process.platform === "darwin" ? "colima" : "docker",
 };
@@ -21,19 +22,32 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === "--force-failure") options.forceFailure = true;
   else if (args[i] === "--keep-vm") options.keepVm = true;
   else if (args[i] === "--preopen-panel") options.preopenPanel = true;
-  else if (args[i] === "--suite" && ["environment", "authenticated"].includes(args[i + 1]))
+  else if (args[i] === "--setup-only") options.setupOnly = true;
+  else if (
+    args[i] === "--suite" &&
+    ["environment", "authenticated", "playwright"].includes(args[i + 1])
+  )
     options.suite = args[++i];
   else if (args[i] === "--provider" && ["colima", "docker"].includes(args[i + 1]))
     options.provider = args[++i];
   else if (args[i] === "--help") {
     console.log(
-      "Usage: node e2e/infra/chrome/run.mjs [--extension DIR] [--suite authenticated|environment] [--provider colima|docker] [--preopen-panel] [--force-failure] [--keep-vm]",
+      "Usage: node e2e/infra/chrome/run.mjs [--setup-only] [--extension DIR] [--suite authenticated|environment|playwright] [--provider colima|docker] [--preopen-panel] [--force-failure] [--keep-vm]",
     );
     process.exit(0);
   } else {
     console.error(`Unknown or incomplete option: ${args[i]}`);
     process.exit(2);
   }
+}
+
+if (options.setupOnly && (options.preopenPanel || options.forceFailure)) {
+  console.error("--preopen-panel and --force-failure require an E2E run.");
+  process.exit(2);
+}
+if (options.suite === "playwright" && (options.preopenPanel || options.forceFailure)) {
+  console.error("--preopen-panel and --force-failure are unavailable for the Playwright suite.");
+  process.exit(2);
 }
 
 const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -48,30 +62,41 @@ const volumeNames = [`${name}-source`, `${name}-state`, `${name}-artifacts`];
 const serverName = `${name}-server`;
 const serverImage =
   "vaultwarden/server:1.37.5@sha256:4fe17f415f90087377d37c755e0ea3cf189dcc6794e49cdd2a9adbb4937d9e1f";
+const needsVault = options.suite !== "environment";
+const playwright = options.suite === "playwright";
 const credentials =
-  options.suite === "authenticated"
+  !options.setupOnly && needsVault
     ? {
         E2E_SERVER: "https://localhost:8080",
         E2E_EMAIL: `chrome-e2e-${runId}@example.invalid`,
         E2E_PASSWORD: randomBytes(24).toString("base64url") + "Aa1!",
       }
     : {};
-if (options.suite === "authenticated") volumeNames.push(`${name}-server-data`, `${name}-tls`);
+if (!options.setupOnly && playwright) {
+  credentials.E2E_SECOND_SERVER = credentials.E2E_SERVER;
+  credentials.E2E_SECOND_EMAIL = `chrome-e2e-${runId}-second@example.invalid`;
+  credentials.E2E_SECOND_PASSWORD = randomBytes(24).toString("base64url") + "Aa1!";
+}
+if (needsVault) volumeNames.push(`${name}-server-data`, `${name}-tls`);
 const output = join(repository, ".debug/chrome-e2e", runId);
 const lock = join(repository, ".debug/chrome-e2e/active.lock");
 const report = {
   runId,
   startedAt: new Date().toISOString(),
   status: "running",
+  setupOnly: options.setupOnly,
   suite: options.suite,
   provider: options.provider,
-  scope:
-    options.suite === "authenticated"
-      ? "Temporary local account: login, lock, website inline Unlock, native side-panel password focus and OS keyboard delivery."
-      : "Chrome environment E2E; authenticated vault/master-password unlock is not tested.",
+  scope: options.setupOnly
+    ? "Prepare the Docker engine and cache images for a later Chrome E2E run."
+    : playwright
+      ? "Run the browser Playwright suite against an isolated Vaultwarden with two temporary accounts."
+      : needsVault
+        ? "Temporary local account: login, lock, website inline Unlock, native side-panel password focus and OS keyboard delivery."
+        : "Chrome environment E2E; authenticated vault/master-password unlock is not tested.",
   profile,
   context,
-  extension: options.extension,
+  extension: options.setupOnly ? undefined : options.extension,
   intentionallyFailing: options.forceFailure,
   preopenPanel: options.preopenPanel,
   steps: [],
@@ -102,7 +127,9 @@ await mkdir(output, { recursive: true });
 const log = join(output, "commands.log");
 const redact = (value) => {
   let text = String(value);
-  if (credentials.E2E_PASSWORD) text = text.split(credentials.E2E_PASSWORD).join("[REDACTED]");
+  for (const password of [credentials.E2E_PASSWORD, credentials.E2E_SECOND_PASSWORD]) {
+    if (password) text = text.split(password).join("[REDACTED]");
+  }
   return text.replace(/access_token=[^\s'"&]+/g, "access_token=[REDACTED]");
 };
 const errorInfo = (error) => ({
@@ -201,9 +228,7 @@ async function cleanupStep(name, action) {
 
 try {
   await step(
-    options.provider === "colima"
-      ? "Check Colima, Docker CLI, and extension build"
-      : "Check Docker CLI and extension build",
+    options.provider === "colima" ? "Check Colima and Docker CLI" : "Check Docker CLI",
     async () => {
       await mkdir(lock);
       ownsLock = true;
@@ -211,6 +236,11 @@ try {
       const colima =
         options.provider === "colima" ? await command("colima", ["version"]) : undefined;
       const docker = await command("docker", ["--version"]);
+      return { colima: colima?.stdout.trim(), docker: docker.stdout.trim() };
+    },
+  );
+  if (!options.setupOnly) {
+    await step("Check extension build", async () => {
       const manifest = JSON.parse(await readFile(join(options.extension, "manifest.json"), "utf8"));
       if (
         manifest.manifest_version !== 3 ||
@@ -219,13 +249,9 @@ try {
       ) {
         throw new Error("Expected a built Manifest V3 extension with a side panel.");
       }
-      return {
-        colima: colima?.stdout.trim(),
-        docker: docker.stdout.trim(),
-        version: manifest.version,
-      };
-    },
-  );
+      return { version: manifest.version };
+    });
+  }
   await step(
     options.provider === "colima"
       ? "Start or verify the dedicated Colima VM"
@@ -280,6 +306,22 @@ try {
     await docker(["build", "--tag", image, here], { timeout: 900_000 });
     return { image };
   });
+  if (needsVault) {
+    await step("Cache the pinned Vaultwarden image", async () => {
+      await docker(["pull", serverImage], { timeout: 300_000 });
+      return { image: serverImage };
+    });
+  }
+  if (!options.setupOnly) await runE2E();
+  report.status = "passed";
+} catch (error) {
+  report.status = "failed";
+  report.error = errorInfo(error);
+} finally {
+  await finish();
+}
+
+async function runE2E() {
   await step("Prepare isolated test containers and volumes", async () => {
     for (const volume of volumeNames) {
       volumes.add(volume);
@@ -295,14 +337,20 @@ try {
       `bitwarden.e2e.run=${runId}`,
       "--volume",
       `${volumeNames[0]}:/extension-source`,
+      ...(playwright ? ["--volume", `${volumeNames[1]}:/project/e2e`] : []),
       "--entrypoint",
       "/bin/true",
       image,
     ]);
     await docker(["cp", `${options.extension}/.`, `${copier}:/extension-source`]);
+    if (playwright) {
+      for (const path of ["src", "tests", "playwright.base.ts", "playwright.browser.config.ts"]) {
+        await docker(["cp", join(repository, "e2e", path), `${copier}:/project/e2e/`]);
+      }
+    }
     await docker(["rm", copier]);
     containers.delete(copier);
-    if (options.suite === "authenticated") {
+    if (needsVault) {
       const tlsContainer = `${name}-tls`;
       containers.add(tlsContainer);
       await docker([
@@ -340,7 +388,6 @@ try {
         .digest("base64");
       await docker(["rm", tlsContainer]);
       containers.delete(tlsContainer);
-      await docker(["pull", serverImage], { timeout: 300_000 });
       containers.add(serverName);
       await docker([
         "create",
@@ -396,14 +443,14 @@ try {
         "--volume",
         `${volumeNames[0]}:/extension-source:ro`,
         "--volume",
-        `${volumeNames[1]}:/state`,
+        `${volumeNames[1]}:${playwright ? "/project/e2e" : "/state"}`,
         "--volume",
         `${volumeNames[2]}:/artifacts`,
         "--env",
         `E2E_FORCE_FAILURE=${options.forceFailure ? "1" : "0"}`,
         "--env",
         `E2E_PREOPEN_LOCKED_PANEL=${options.preopenPanel ? "1" : "0"}`,
-        ...(options.suite === "authenticated"
+        ...(needsVault
           ? [
               "--network",
               `container:${serverName}`,
@@ -421,9 +468,21 @@ try {
               `${volumeNames[4]}:/tls:ro`,
             ]
           : []),
+        ...(playwright
+          ? [
+              "--env",
+              "E2E_SECOND_SERVER",
+              "--env",
+              "E2E_SECOND_EMAIL",
+              "--env",
+              "E2E_SECOND_PASSWORD",
+              "--env",
+              "NODE_PATH=/opt/e2e/node_modules",
+            ]
+          : []),
         image,
         "node",
-        `/opt/e2e/${options.suite === "authenticated" ? "authenticated" : "environment"}.e2e.mjs`,
+        `/opt/e2e/${options.suite}.e2e.mjs`,
       ],
       { env: credentials },
     );
@@ -432,7 +491,7 @@ try {
   });
   await step(`Run headed Chrome ${options.suite} E2E`, async () => {
     const attached = await docker(["start", "--attach", name], {
-      timeout: options.suite === "authenticated" ? 420_000 : 240_000,
+      timeout: playwright ? 1_200_000 : needsVault ? 420_000 : 240_000,
       allowFailure: true,
     });
     const inspection = await docker(["inspect", "--format", "{{json .State}}", name]);
@@ -445,16 +504,14 @@ try {
     };
     if (attached.code !== 0 || state.Status !== "exited" || state.ExitCode !== 0) {
       throw new Error(
-        `Environment E2E failed: container exit ${state.ExitCode}; see browser/report.json and commands.log.`,
+        `Chrome E2E failed: container exit ${state.ExitCode}; see browser/report.json and commands.log.`,
       );
     }
     return report.container;
   });
-  report.status = "passed";
-} catch (error) {
-  report.status = "failed";
-  report.error = errorInfo(error);
-} finally {
+}
+
+async function finish() {
   cleaning = true;
   if (mainContainerCreated) {
     await cleanupStep("Save browser reports and screenshots", async () => {
@@ -515,7 +572,7 @@ try {
     `<!doctype html><meta charset="utf-8"><title>Chrome E2E ${escape(report.status)}</title><h1>Chrome ${escape(options.suite)} E2E: ${escape(report.status)}</h1><p>${escape(report.scope)}</p><p>Run: ${escape(runId)}</p><p><a href="report.json">JSON report</a> · <a href="commands.log">Command log</a></p><h2>Environment and E2E</h2><ul>${report.steps.map((entry) => `<li>${escape(entry.status)} — ${escape(entry.name)} ${escape(entry.error?.message)}</li>`).join("")}</ul>${browserScenarios}<h2>Cleanup</h2><ul>${report.cleanup.map((entry) => `<li>${escape(entry.status)} — ${escape(entry.name)} ${escape(entry.error?.message ?? entry.reason)}</li>`).join("")}</ul>${browserLinks}`,
   );
   await writeFile(
-    join(repository, ".debug/chrome-e2e/latest.json"),
+    join(repository, ".debug/chrome-e2e", options.setupOnly ? "latest-setup.json" : "latest.json"),
     JSON.stringify(
       {
         runId,

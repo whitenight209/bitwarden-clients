@@ -5,6 +5,12 @@ import { NativeSidePanel, openNativeSidePanel } from "../../../src/browser/side-
 import { LockScreen } from "../../../src/lock-screen";
 import { LoginPage } from "../../../src/login";
 
+const actionPopup = (page: import("@playwright/test").Page) =>
+  page.evaluate(async () => {
+    const url = await chrome.action.getPopup({});
+    return url ? new URL(url, chrome.runtime.getURL("/")).pathname : "";
+  });
+
 test.beforeEach(async ({ popup, context }) => {
   const login = new LoginPage(popup);
   await login.logIn();
@@ -15,7 +21,7 @@ test.beforeEach(async ({ popup, context }) => {
 
 test("starts OFF with the existing action popup", async ({ popup }) => {
   await expect(popup.getByTestId("side-panel-mode")).not.toBeChecked();
-  expect(await popup.evaluate(() => chrome.action.getPopup({}))).toBe("popup/index.html");
+  expect(await actionPopup(popup)).toBe("/popup/index.html");
 });
 
 test("ON removes the action popup and enables native panel behavior", async ({ popup }) => {
@@ -33,9 +39,7 @@ test("OFF restores popup behavior without reinstalling", async ({ popup }) => {
   await toggle.check();
   await expect.poll(() => popup.evaluate(() => chrome.action.getPopup({}))).toBe("");
   await toggle.uncheck();
-  await expect
-    .poll(() => popup.evaluate(() => chrome.action.getPopup({})))
-    .toBe("popup/index.html");
+  await expect.poll(() => actionPopup(popup)).toBe("/popup/index.html");
   expect(
     await popup.evaluate(
       async () => (await chrome.sidePanel.getPanelBehavior()).openPanelOnActionClick,
@@ -138,7 +142,7 @@ for (const enabled of [false, true]) {
     await clickInlineUnlock(context, website);
     if (enabled) {
       const windowId = await locked.evaluate(async () => (await chrome.windows.getCurrent()).id!);
-      const panel = await NativeSidePanel.attach(context, locked, windowId);
+      let panel = await NativeSidePanel.attach(context, locked, windowId);
       try {
         await expect
           .poll(() =>
@@ -153,9 +157,12 @@ for (const enabled of [false, true]) {
             'document.hasFocus() && !!document.activeElement?.matches("[data-testid=lock-master-password-input], [data-testid=lock-pin-input], [data-testid=lock-biometric-unlock-button]")',
           );
         await expect.poll(unlockFocused).toBe(true);
-        // Reuse the already-mounted lock screen: no route/component recreation to autofocus it.
+        // Chrome must replace the locked host to return native keyboard focus to it.
+        const previous = panel.targetId;
         await website.locator('input[name="username"]').click();
         await clickInlineUnlock(context, website);
+        await panel.dispose();
+        panel = await NativeSidePanel.attach(context, locked, windowId, previous);
         await expect.poll(unlockFocused).toBe(true);
       } finally {
         await panel.dispose();

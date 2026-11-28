@@ -14,7 +14,7 @@ RUN case "$TARGETARCH" in arm64) platform=linux-arm64 ;; amd64) platform=linux64
 WORKDIR /opt/e2e
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
-COPY environment.e2e.mjs authenticated.e2e.mjs auth-browser-helpers.mjs test-server.mjs entrypoint.sh ./
+COPY environment.e2e.mjs authenticated.e2e.mjs playwright.e2e.mjs auth-browser-helpers.mjs test-server.mjs entrypoint.sh ./
 ENV DISPLAY=:99
 ENTRYPOINT ["bash", "/opt/e2e/entrypoint.sh"]
 CMD ["node", "/opt/e2e/environment.e2e.mjs"]

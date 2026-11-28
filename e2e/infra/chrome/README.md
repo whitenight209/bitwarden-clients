@@ -4,7 +4,23 @@ macOS에서는 전용 Colima VM, Linux에서는 Docker 엔진 안에서 같은 C
 
 ## 실행
 
-Node 24, Docker CLI를 준비한다. macOS에서는 Colima도 설치한다. 확장 빌드 후 다음 명령을 실행한다.
+로컬 검증에는 Apple Silicon Mac mini, Node 24.22.2, Docker CLI 29.9.2, Colima 0.10.3을 사용했다. 전용 Linux ARM64 VM은 Apple Virtualization Framework로 실행하며 CPU 2개, RAM 4GiB, 디스크 40GiB를 사용한다. 컨테이너에서 화면이 있는 Chrome for Testing을 Xvfb와 Openbox로 띄우고, Puppeteer로 브라우저를 제어하며 xdotool로 OS 키 입력을 보낸다.
+
+호스트에 Node 24와 Docker CLI를 준비한다. macOS에서 Colima나 Docker CLI가 없다면 Homebrew로 설치할 수 있다.
+
+```sh
+brew install colima docker
+```
+
+이 준비 단계는 로컬 개발용이다. 확장 빌드 전에 테스트 환경만 준비하려면 저장소 루트에서 다음 명령을 실행한다.
+
+```sh
+node e2e/infra/chrome/run.mjs --setup-only
+```
+
+도구를 확인하고 전용 Colima VM을 기동한 뒤 Chrome 환경 이미지를 빌드하고 Vaultwarden 이미지를 내려받는다. 확장 빌드, 테스트 계정, 브라우저 실행 없이 완료된다. 준비 과정에서 시작한 VM은 종료 시 정지하고 이미지 캐시는 보존한다. 준비 리포트의 위치는 `.debug/chrome-e2e/latest-setup.json`에 저장한다.
+
+확장 빌드와 인증 E2E는 다음 명령으로 실행한다. E2E 실행기가 같은 환경 준비를 수행하고 기존 이미지 캐시를 재사용하므로 준비 명령은 미리 설치 상태를 확인하고 싶을 때 사용하면 된다.
 
 ```sh
 npm run build:prod:chrome --workspace @bitwarden/browser
@@ -56,6 +72,14 @@ node e2e/infra/chrome/run.mjs --provider docker
 
 `environment` 스위트는 계정 없이 Chrome 실행, OS 키 입력, 실제 네이티브 사이드 패널과 로그인 이메일 입력을 확인한다. 이 결과로 인증·비밀번호 잠금 해제 회귀가 검증됐다고 판단하지 않는다.
 
+기존 브라우저 Playwright 테스트를 같은 임시 Vaultwarden 환경에서 실행하려면 아래 명령을 사용한다. 마스터 비밀번호 로그인, PIN, 사이드 패널을 포함하고 다중 계정 PIN 테스트를 위해 임시 계정 두 개를 준비한다. `npm run build:prod:chrome`으로 만든 확장 폴더를 사용한다.
+
+```sh
+node e2e/infra/chrome/run.mjs --suite playwright
+```
+
+임시 계정이 입력된 Playwright 영상과 트레이스는 저장하지 않는다. 테스트별 결과는 공통 JSON·HTML 리포트에서 볼 수 있다.
+
 Chrome for Testing 158.0.8127.88, Puppeteer-core 25.19.0, Vaultwarden 1.37.5 이미지를 고정한다. Vaultwarden 이미지에는 digest도 지정한다. Linux ARM64와 AMD64를 지원한다.
 
 ## 3. 리포트와 정리
@@ -80,7 +104,7 @@ node e2e/infra/chrome/run.mjs --suite environment --force-failure
 
 동일 작업 공간에서는 실행 잠금으로 중복 실행을 막는다. SIGINT·SIGTERM은 정리 경로로 처리한다.
 
-유일한 `Chrome Extension Release` 워크플로도 Linux Docker 환경에서 같은 인증 스위트를 실행한다. 패키징한 실제 릴리스 버전으로 테스트하고, E2E가 성공해야 릴리스 파일을 업로드·배포한다. 실패한 실행의 보고서도 `chrome-e2e-<run ID>` 아티팩트에 남긴다.
+`Chrome Extension E2E` 워크플로는 Actions에서 수동 실행할 수 있다. 빌드 후 Vaultwarden을 사용하는 두 잠금 해제 시나리오와 브라우저 Playwright 스위트를 실행하고 보고서를 업로드한다. `Chrome Extension Release`도 Linux Docker에서 패키징한 확장으로 인증 스위트를 실행하며, E2E가 성공해야 배포한다.
 
 ## 검증 범위
 

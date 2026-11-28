@@ -25,16 +25,6 @@ export async function openNativeSidePanel(page: Page, windowId?: number): Promis
   }, owner);
   await page.locator("#e2e-open-native-panel").click();
   await expect(page.locator("#e2e-open-native-panel")).toHaveAttribute("data-result", "opened");
-  await expect
-    .poll(() =>
-      page.evaluate(
-        async (id) =>
-          (await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"], windowIds: [id] }))
-            .length,
-        owner,
-      ),
-    )
-    .toBeGreaterThan(0);
   return owner;
 }
 
@@ -44,40 +34,57 @@ export class NativeSidePanel {
   private constructor(
     private cdp: CDPSession,
     private sessionId: string,
+    readonly targetId: string,
   ) {}
 
   static async attach(
     context: BrowserContext,
     page: Page,
     windowId: number,
+    replacedTargetId?: string,
   ): Promise<NativeSidePanel> {
     const cdp = await context.newCDPSession(page);
-    let targets: Array<{ targetId: string; url: string }> = [];
-    await expect
-      .poll(async () => {
-        const { targetInfos } = await cdp.send("Target.getTargets");
-        targets = targetInfos.filter(
-          (target) =>
-            target.url.startsWith("chrome-extension://") &&
-            target.url.includes("uilocation=sidepanel"),
-        );
-        return targets.length;
-      })
-      .toBeGreaterThan(0);
-    for (const target of targets) {
-      const { sessionId } = await cdp.send("Target.attachToTarget", {
-        targetId: target.targetId,
-        flatten: false,
-      });
-      const panel = new NativeSidePanel(cdp, sessionId);
-      const owner = await panel.evaluate<number>("chrome.windows.getCurrent().then(win => win.id)");
-      if (owner === windowId) {
-        return panel;
-      }
-      await cdp.send("Target.detachFromTarget", { sessionId });
+    let panel: NativeSidePanel | undefined;
+    try {
+      await expect
+        .poll(
+          async () => {
+            const { targetInfos } = await cdp.send("Target.getTargets");
+            for (const target of targetInfos) {
+              if (
+                target.targetId === replacedTargetId ||
+                !target.url.startsWith("chrome-extension://") ||
+                !target.url.includes("sidePanelDocument=")
+              ) {
+                continue;
+              }
+              const connection = await cdp
+                .send("Target.attachToTarget", { targetId: target.targetId, flatten: false })
+                .catch((): undefined => undefined);
+              if (!connection) {
+                continue;
+              }
+              const candidate = new NativeSidePanel(cdp, connection.sessionId, target.targetId);
+              // Chrome can report windowId=-1 in getContexts; ask the actual native view.
+              const owner = await candidate
+                .evaluate<number>("chrome.windows.getCurrent().then(win => win.id)")
+                .catch((): undefined => undefined);
+              if (owner === windowId) {
+                panel = candidate;
+                return true;
+              }
+              await cdp.send("Target.detachFromTarget", connection).catch(() => {});
+            }
+            return false;
+          },
+          { message: `Find the native panel belonging to window ${windowId}` },
+        )
+        .toBe(true);
+    } catch (error) {
+      await cdp.detach().catch(() => {});
+      throw error;
     }
-    await cdp.detach();
-    throw new Error(`No native panel belongs to browser window ${windowId}.`);
+    return panel!;
   }
 
   async evaluate<T>(expression: string): Promise<T> {
