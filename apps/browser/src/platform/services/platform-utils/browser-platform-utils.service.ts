@@ -194,7 +194,10 @@ export abstract class BrowserPlatformUtilsService implements PlatformUtilsServic
 
   getApplicationVersionNumber(): Promise<string> {
     const manifest = chrome.runtime.getManifest();
-    return Promise.resolve(manifest.version.split(RegExp("[+|-]"))[0].trim());
+    const version = manifest.version.split(RegExp("[+|-]"))[0].trim();
+    // Server API versions use SemVer; Chrome's fourth component identifies a custom release.
+    const protocolVersion = version.match(/^(\d+\.\d+\.\d+)\.\d+$/)?.[1] ?? version;
+    return Promise.resolve(protocolVersion);
   }
 
   supportsWebAuthn(win: Window): boolean {

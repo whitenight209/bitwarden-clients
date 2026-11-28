@@ -9,6 +9,7 @@ on:
     paths:
       - 'apps/browser/**'
       - 'libs/**'
+      - 'e2e/infra/chrome/**'
       - 'package.json'
       - 'package-lock.json'
       - '.nvmrc'
@@ -35,7 +36,7 @@ defaults:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -93,6 +94,19 @@ jobs:
             --build apps/browser/build --out .debug/custom-release --version "$RELEASE_VERSION" "${base_args[@]}"
           node --experimental-strip-types apps/browser/scripts/verify-custom-update.mjs verify \
             --release .debug/custom-release --config apps/browser/build/custom-update-config.json "${base_args[@]}"
+      - name: Test packaged Chrome side-panel unlock with a temporary vault
+        run: |
+          node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --extension apps/browser/build
+          node e2e/infra/chrome/run.mjs --provider docker --suite authenticated --extension apps/browser/build --preopen-panel
+      - name: Upload Chrome E2E reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chrome-e2e-${{ github.run_id }}
+          path: .debug/chrome-e2e/**
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

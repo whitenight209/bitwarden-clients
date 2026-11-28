@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!entrypoint.sh
+!environment.e2e.mjs
+!authenticated.e2e.mjs
+!auth-browser-helpers.mjs
+!test-server.mjs

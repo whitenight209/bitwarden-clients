@@ -46,6 +46,9 @@ export function focusSidePanelUnlock(win: Window, requestUrl: string): () => voi
       stop();
       return;
     }
+    // A forwarded click can allow window focus only during this synchronous callback.
+    // Claim it even while Angular is still preparing the actual unlock control.
+    win.focus();
     const control = [
       ...doc.querySelectorAll<HTMLInputElement | HTMLButtonElement>(UNLOCK_CONTROLS),
     ].find((element) => !element.matches(':disabled, [readonly], [aria-disabled="true"]'));
@@ -61,7 +64,6 @@ export function focusSidePanelUnlock(win: Window, requestUrl: string): () => voi
       schedule();
       return;
     }
-    win.focus();
     control.focus({ preventScroll: true });
     if (doc.activeElement === control && doc.hasFocus()) {
       stop();
@@ -94,6 +96,6 @@ export function focusSidePanelUnlock(win: Window, requestUrl: string): () => voi
   doc.addEventListener("visibilitychange", schedule);
   doc.addEventListener("pointerdown", stop, true);
   doc.addEventListener("keydown", stop, true);
-  schedule();
+  attempt();
   return stop;
 }

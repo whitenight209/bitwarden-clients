@@ -2610,7 +2610,6 @@ export class OverlayBackground implements OverlayBackgroundInterface {
       return;
     }
 
-    this.closeInlineMenu(sender, { forceCloseInlineMenu: true });
     await this.openUnlockPopout(sender.tab, () =>
       this.intraprocessMessageSender.send(ADD_TO_LOCKED_VAULT_PENDING_NOTIFICATIONS, {
         data: {
@@ -2622,6 +2621,7 @@ export class OverlayBackground implements OverlayBackgroundInterface {
         },
       }),
     );
+    this.closeInlineMenu(sender, { forceCloseInlineMenu: true });
   }
 
   /**
@@ -3503,8 +3503,48 @@ export class OverlayBackground implements OverlayBackgroundInterface {
         this.portKeyForTab[sender.tab.id] === navigation.portKey &&
         navigation.portKey
       ) {
-        void SidePanelMode.reveal(sender.tab.windowId);
-        this.handleOverlayElementPortMessage(navigation, port);
+        const dispatchNavigation = () => {
+          void SidePanelMode.reveal(sender.tab.windowId);
+          this.handleOverlayElementPortMessage(navigation, port);
+          sendResponse({ handled: true });
+        };
+        const refresh =
+          navigation.command === "unlockVault"
+            ? SidePanelMode.prepareUnlockRefresh(sender.tab.windowId)
+            : undefined;
+        if (refresh !== undefined) {
+          // The broker has already installed its refresh barrier. Start the
+          // original unlock exactly once while the connector still exists;
+          // openUnlockPopout waits for the new native panel before menu closure.
+          this.handleOverlayElementPortMessage(navigation, port);
+          void refresh
+            .then(
+              (reopenWindowId) => {
+                if (
+                  typeof reopenWindowId === "number" &&
+                  Number.isInteger(reopenWindowId) &&
+                  reopenWindowId >= 0
+                ) {
+                  // The foreground only reopens the host. Its iframe may be
+                  // removed as soon as Chrome moves focus into the new panel.
+                  sendResponse({ handled: true, reopenWindowId });
+                  return;
+                }
+                sendResponse({ handled: true });
+              },
+              (error) => {
+                this.logService.error(error);
+                sendResponse({ handled: true });
+              },
+            )
+            .catch((error) => {
+              this.logService.error(error);
+              sendResponse({ handled: true });
+            });
+          return true;
+        }
+        dispatchNavigation();
+        return;
       }
       sendResponse({ handled: true });
       return;

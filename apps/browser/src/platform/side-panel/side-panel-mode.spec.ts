@@ -4,8 +4,13 @@ function mockEvent() {
   return {
     listeners,
     addListener: jest.fn((listener) => listeners.push(listener)),
-    removeListener: jest.fn(),
-    emit: (...args: unknown[]) => listeners.map((listener) => listener(...args)),
+    removeListener: jest.fn((listener) => {
+      const index = listeners.indexOf(listener);
+      if (index >= 0) {
+        listeners.splice(index, 1);
+      }
+    }),
+    emit: (...args: unknown[]) => [...listeners].map((listener) => listener(...args)),
   };
 }
 
@@ -43,6 +48,7 @@ function chromeMock() {
     },
     sidePanel: {
       open: jest.fn(async () => {}),
+      close: jest.fn(async () => {}),
       setOptions: jest.fn(async () => {}),
       getOptions: jest.fn(async () => ({})),
       setPanelBehavior: jest.fn(async () => {}),
@@ -51,7 +57,7 @@ function chromeMock() {
     tabs: { query: jest.fn(async (): Promise<chrome.tabs.Tab[]> => []) },
     windows: {
       getCurrent: jest.fn(async () => ({ id: 7, type: "normal" })),
-      get: jest.fn(async () => ({ id: 7, type: "normal" })),
+      get: jest.fn(async (id: number) => ({ id, type: "normal" })),
       getLastFocused: jest.fn(async () => ({ id: 7, type: "normal" })),
       update: jest.fn(async () => {}),
       onFocusChanged: mockEvent(),
@@ -156,6 +162,236 @@ test("reveal starts synchronously in the originating click and never opens when 
   const pending = mode.reveal(7);
   expect(api.sidePanel.open).toHaveBeenCalledWith({ windowId: 7 });
   await pending;
+});
+
+test("a locked host refresh waits for real disconnection and keeps authentication queued until its replacement registers", async () => {
+  await mode.setEnabled(true);
+  await mode.open("popup/index.html#/lock", {
+    senderWindowId: 7,
+    singleActionKey: "auth_unlockExtension",
+  });
+  const old = nativePort();
+  api.runtime.onConnect.emit(old);
+  await settleRegistration();
+  const cancelled = jest.fn();
+  mode.cancelled$.subscribe(cancelled);
+  const refreshing = mode.prepareUnlockRefresh(7)!;
+  const check = old.postMessage.mock.calls.find(
+    ([message]) => message.type === "checkUnlockRefresh",
+  )![0];
+  old.onMessage.emit({ type: "unlockRefreshReady", id: check.id, ready: true });
+  await settleRegistration();
+  expect(api.sidePanel.close).toHaveBeenCalledWith({ windowId: 7 });
+  let closed = false;
+  void refreshing.then(() => {
+    closed = true;
+  });
+  await settleRegistration();
+  expect(closed).toBe(false);
+  api.sidePanel.open.mockClear();
+  const opening = mode.open("popup/index.html#/lock", {
+    senderWindowId: 7,
+    singleActionKey: "auth_unlockExtension",
+  });
+  const duplicate = mode.prepareUnlockRefresh(7)!;
+  await settleRegistration();
+  expect(api.sidePanel.open).not.toHaveBeenCalled();
+  expect(api.sidePanel.close).toHaveBeenCalledTimes(1);
+  old.onDisconnect.emit();
+  await expect(refreshing).resolves.toBe(7);
+  expect(cancelled).not.toHaveBeenCalled();
+  expect(mode.hasRequest("auth_unlockExtension")).toBe(true);
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", documentId: "replacement", windowId: 7, tabId: -1 },
+  ]);
+  const fresh = nativePort("replacement");
+  api.runtime.onConnect.emit(fresh);
+  await settleRegistration();
+  await expect(opening).resolves.toEqual(expect.objectContaining({ id: expect.any(Number) }));
+  await expect(duplicate).resolves.toBeUndefined();
+  expect(fresh.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "navigate" }));
+  expect(mode.ownsRequest(fresh.sender, "auth_unlockExtension")).toBe(true);
+});
+
+test("a pre-opened locked panel queues its first authentication before closing and never refreshes another window", async () => {
+  await mode.setEnabled(true);
+  const panel = nativePort();
+  api.runtime.onConnect.emit(panel);
+  await settleRegistration();
+  expect(mode.prepareUnlockRefresh(8)).toBeUndefined();
+  const refreshing = mode.prepareUnlockRefresh(7)!;
+  const check = panel.postMessage.mock.calls.find(
+    ([message]) => message.type === "checkUnlockRefresh",
+  )![0];
+  panel.onMessage.emit({ type: "unlockRefreshReady", id: check.id, ready: true });
+  await settleRegistration();
+  expect(mode.hasRequest("auth_unlockExtension")).toBe(true);
+  expect(api.sidePanel.close).toHaveBeenCalledWith({ windowId: 7 });
+  panel.onDisconnect.emit();
+  await expect(refreshing).resolves.toBe(7);
+});
+
+test("refresh waits for both the native closed event and document disconnection when Chrome exposes onClosed", async () => {
+  const onClosed = mockEvent();
+  Object.assign(api.sidePanel, { onClosed });
+  await mode.setEnabled(true);
+  const panel = nativePort();
+  api.runtime.onConnect.emit(panel);
+  await settleRegistration();
+  const refreshing = mode.prepareUnlockRefresh(7)!;
+  const check = panel.postMessage.mock.calls.find(
+    ([message]) => message.type === "checkUnlockRefresh",
+  )![0];
+  panel.onMessage.emit({ type: "unlockRefreshReady", id: check.id, ready: true });
+  await settleRegistration();
+  panel.onDisconnect.emit();
+  let completed = false;
+  void refreshing.then(() => {
+    completed = true;
+  });
+  await settleRegistration();
+  expect(completed).toBe(false);
+  onClosed.emit({ windowId: 8 });
+  await settleRegistration();
+  expect(completed).toBe(false);
+  onClosed.emit({ windowId: 7 });
+  await expect(refreshing).resolves.toBe(7);
+});
+
+test("normal popup mode does not require a Side Panel API", () => {
+  Object.defineProperty(globalThis, "chrome", {
+    value: { ...api, sidePanel: undefined },
+    configurable: true,
+    writable: true,
+  });
+  expect(mode.prepareUnlockRefresh(7)).toBeUndefined();
+});
+
+test("editing or another authentication request never closes a native panel", async () => {
+  await mode.setEnabled(true);
+  const panel = nativePort();
+  api.runtime.onConnect.emit(panel);
+  await settleRegistration();
+  const refreshing = mode.prepareUnlockRefresh(7)!;
+  const check = panel.postMessage.mock.calls.find(
+    ([message]) => message.type === "checkUnlockRefresh",
+  )![0];
+  panel.onMessage.emit({ type: "unlockRefreshReady", id: check.id, ready: false });
+  await expect(refreshing).resolves.toBeUndefined();
+  expect(api.sidePanel.close).not.toHaveBeenCalled();
+  await mode.open("popup/index.html#/fido2", { senderWindowId: 7, singleActionKey: "fido_1" });
+  expect(mode.prepareUnlockRefresh(7)).toBeUndefined();
+  expect(api.sidePanel.close).not.toHaveBeenCalled();
+});
+
+test("an unresponsive lock check expires without closing or stranding later requests", async () => {
+  await mode.setEnabled(true);
+  const panel = nativePort();
+  api.runtime.onConnect.emit(panel);
+  await settleRegistration();
+  const refreshing = mode.prepareUnlockRefresh(7)!;
+  await jest.advanceTimersByTimeAsync(10_000);
+  await expect(refreshing).resolves.toBeUndefined();
+  expect(api.sidePanel.close).not.toHaveBeenCalled();
+  api.sidePanel.open.mockClear();
+  await mode.reveal(7);
+  expect(api.sidePanel.open).toHaveBeenCalledWith({ windowId: 7 });
+});
+
+test("a late disconnect after the close deadline cannot cancel authentication or rebind it to the retired document", async () => {
+  await mode.setEnabled(true);
+  const original = await mode.open("popup/index.html#/lock", {
+    senderWindowId: 7,
+    singleActionKey: "auth_unlockExtension",
+  });
+  const old = nativePort();
+  api.runtime.onConnect.emit(old);
+  await settleRegistration();
+  const cancelled = jest.fn();
+  mode.cancelled$.subscribe(cancelled);
+  const refreshing = mode.prepareUnlockRefresh(7)!;
+  const check = old.postMessage.mock.calls.find(
+    ([message]) => message.type === "checkUnlockRefresh",
+  )![0];
+  old.onMessage.emit({ type: "unlockRefreshReady", id: check.id, ready: true });
+  await settleRegistration();
+  await jest.advanceTimersByTimeAsync(10_000);
+  await expect(refreshing).resolves.toBeUndefined();
+  expect(mode.ownsRequest(old.sender, "auth_unlockExtension")).toBe(false);
+  old.onDisconnect.emit();
+  expect(cancelled).not.toHaveBeenCalled();
+  expect(mode.hasRequest("auth_unlockExtension")).toBe(true);
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", documentId: "late-replacement", windowId: 7, tabId: -1 },
+  ]);
+  const fresh = nativePort("late-replacement");
+  api.runtime.onConnect.emit(fresh);
+  await settleRegistration();
+  expect(fresh.postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "navigate", requestId: original!.id }),
+  );
+  expect(mode.ownsRequest(fresh.sender, "auth_unlockExtension")).toBe(true);
+});
+
+test("a rejected close restores the live verified document and normal cancellation", async () => {
+  await mode.setEnabled(true);
+  const panel = nativePort();
+  api.runtime.onConnect.emit(panel);
+  await settleRegistration();
+  api.sidePanel.close.mockRejectedValueOnce(new Error("Close unavailable"));
+  const refreshing = mode.prepareUnlockRefresh(7)!;
+  const check = panel.postMessage.mock.calls.find(
+    ([message]) => message.type === "checkUnlockRefresh",
+  )![0];
+  panel.onMessage.emit({ type: "unlockRefreshReady", id: check.id, ready: true });
+  await expect(refreshing).resolves.toBeUndefined();
+  expect(mode.ownsRequest(panel.sender, "auth_unlockExtension")).toBe(true);
+  panel.onDisconnect.emit();
+  expect(mode.hasRequest("auth_unlockExtension")).toBe(false);
+});
+
+test("the registered view permits refresh only on a lock screen without an active dialog", () => {
+  const original = window.location.href;
+  window.history.replaceState(
+    null,
+    "",
+    "/?uilocation=sidepanel&sidePanelDocument=bdf45d95-b10e-4d60-b154-779d36310a07#/lock",
+  );
+  const screen = document.body.appendChild(document.createElement("div"));
+  screen.dataset.testid = "lock-screen";
+  const port = nativePort();
+  api.runtime.connect.mockReturnValue(port);
+  const navigate = jest.fn();
+  const cleanup = mode.connectView(navigate);
+  try {
+    port.onMessage.emit({ type: "checkUnlockRefresh", id: 1 });
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: "unlockRefreshReady",
+      id: 1,
+      ready: true,
+    });
+    const dialog = screen.appendChild(document.createElement("div"));
+    dialog.setAttribute("role", "dialog");
+    port.onMessage.emit({ type: "checkUnlockRefresh", id: 2 });
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: "unlockRefreshReady",
+      id: 2,
+      ready: false,
+    });
+    dialog.remove();
+    window.history.replaceState(null, "", window.location.href.replace("#/lock", "#/edit-cipher"));
+    port.onMessage.emit({ type: "checkUnlockRefresh", id: 3 });
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: "unlockRefreshReady",
+      id: 3,
+      ready: false,
+    });
+    expect(navigate).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    screen.remove();
+    window.history.replaceState(null, "", original);
+  }
 });
 
 test("a denied user gesture leaves a queued request instead of opening a fallback popout", async () => {
@@ -345,7 +581,11 @@ test("a repeated unlock request in the same window receives a new focus revision
 
 test("a panel refocuses only for a fresh explicit request, and cancels focus on completion", async () => {
   const original = window.location.href;
-  window.history.replaceState(null, "", "/?uilocation=sidepanel#/lock");
+  window.history.replaceState(
+    null,
+    "",
+    "/?uilocation=sidepanel&sidePanelDocument=bdf45d95-b10e-4d60-b154-779d36310a07#/lock",
+  );
   const stop = jest.fn();
   const helper = await import("./side-panel-unlock-focus");
   const focus = jest.spyOn(helper, "focusSidePanelUnlock").mockReturnValue(stop);
@@ -381,7 +621,11 @@ test("a panel refocuses only for a fresh explicit request, and cancels focus on 
 
 test("a disposed panel never starts focusing after an in-flight navigation resolves", async () => {
   const original = window.location.href;
-  window.history.replaceState(null, "", "/?uilocation=sidepanel#/lock");
+  window.history.replaceState(
+    null,
+    "",
+    "/?uilocation=sidepanel&sidePanelDocument=bdf45d95-b10e-4d60-b154-779d36310a07#/lock",
+  );
   const helper = await import("./side-panel-unlock-focus");
   const focus = jest.spyOn(helper, "focusSidePanelUnlock").mockReturnValue(jest.fn());
   const port = { onMessage: mockEvent(), postMessage: jest.fn(), disconnect: jest.fn() };
@@ -409,4 +653,484 @@ test("a disposed panel never starts focusing after an in-flight navigation resol
     focus.mockRestore();
     window.history.replaceState(null, "", original);
   }
+});
+
+function nativePort(documentId: string | undefined = sender.documentId) {
+  return {
+    name: "customSidePanelView",
+    sender: { ...sender, documentId },
+    onMessage: mockEvent(),
+    onDisconnect: mockEvent(),
+    postMessage: jest.fn(),
+    disconnect: jest.fn(),
+  };
+}
+
+async function settleRegistration() {
+  for (let turn = 0; turn < 8; turn++) {
+    await Promise.resolve();
+  }
+}
+
+async function askForWindow(port: ReturnType<typeof nativePort>) {
+  api.runtime.onConnect.emit(port);
+  await settleRegistration();
+  const identify = port.postMessage.mock.calls.find(
+    ([message]) => message.type === "identifyWindow",
+  )?.[0];
+  expect(identify).toEqual({ type: "identifyWindow", requestId: expect.any(Number) });
+  return identify.requestId;
+}
+
+test("a verified native panel with windowId -1 identifies its own owner before receiving requests", async () => {
+  await mode.setEnabled(true);
+  const request = await mode.open("popup/index.html#/lock", {
+    senderWindowId: 7,
+    singleActionKey: "auth_unlockExtension",
+  });
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: sender.documentId },
+  ]);
+  api.windows.getLastFocused.mockClear();
+  const port = nativePort();
+  const requestId = await askForWindow(port);
+  expect(port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "navigate" }));
+  port.onMessage.emit({ type: "identifiedWindow", requestId, windowId: 7 });
+  await settleRegistration();
+  expect(api.windows.get).toHaveBeenCalledWith(7);
+  expect(api.windows.getLastFocused).not.toHaveBeenCalled();
+  expect(port.postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "connected", windowId: 7 }),
+  );
+  expect(port.postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "navigate", requestId: request!.id }),
+  );
+  expect(mode.ownsRequest(sender, "auth_unlockExtension")).toBe(true);
+});
+
+const token7 = "bdf45d95-b10e-4d60-b154-779d36310a07";
+const token8 = "bdf45d95-b10e-4d60-b154-779d36310a08";
+function tokenPanel(token = token7, documentId = "native-document7") {
+  const url = `${sender.url}?uilocation=sidepanel&sidePanelDocument=${token}#/lock`;
+  const port = nativePort();
+  port.sender = { ...sender, documentId: undefined, url };
+  return {
+    port,
+    context: { contextType: "SIDE_PANEL", documentId, documentUrl: url, windowId: -1, tabId: -1 },
+  };
+}
+
+test.each(["#/lock", "#/startup"])(
+  "a native panel without sender.documentId verifies committed identity despite SPA route %s and can finish authentication",
+  async (fragment) => {
+    await mode.setEnabled(true);
+    const request = await mode.open("popup/index.html#/lock", {
+      senderWindowId: 7,
+      singleActionKey: "auth_unlockExtension",
+    });
+    const { port, context } = tokenPanel();
+    context.documentUrl = context.documentUrl
+      .replace("#/lock", fragment)
+      .replace(
+        "uilocation=sidepanel",
+        "uilocation=sidepanel&singleActionPopout=auth_unlockExtension",
+      );
+    api.runtime.getContexts.mockResolvedValue([context]);
+    const requestId = await askForWindow(port);
+    port.onMessage.emit({ type: "identifiedWindow", requestId, windowId: 7 });
+    await settleRegistration();
+    expect(mode.ownsRequest(port.sender, "auth_unlockExtension")).toBe(true);
+    expect(port.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "navigate", requestId: request!.id }),
+    );
+    const response = await new Promise((resolve) =>
+      api.runtime.onMessage.emit(
+        { customSidePanel: "close", key: "auth_unlockExtension" },
+        port.sender,
+        resolve,
+      ),
+    );
+    expect(response).toEqual({ closed: true });
+    expect(mode.hasRequest("auth_unlockExtension")).toBe(false);
+  },
+);
+
+test("missing-documentId panels in two windows keep authentication ownership separate", async () => {
+  await mode.setEnabled(true);
+  const first = await mode.open("popup/index.html#/lock", {
+    senderWindowId: 7,
+    singleActionKey: "auth7",
+  });
+  await mode.open("popup/index.html#/lock", { senderWindowId: 8, singleActionKey: "auth8" });
+  const panel7 = tokenPanel();
+  const panel8 = tokenPanel(token8, "native-document8");
+  api.runtime.getContexts.mockResolvedValue([panel7.context, panel8.context]);
+  const id7 = await askForWindow(panel7.port);
+  const id8 = await askForWindow(panel8.port);
+  panel8.port.onMessage.emit({ type: "identifiedWindow", requestId: id8, windowId: 8 });
+  panel7.port.onMessage.emit({ type: "identifiedWindow", requestId: id7, windowId: 7 });
+  await settleRegistration();
+  expect(mode.ownsRequest(panel7.port.sender, "auth7")).toBe(true);
+  expect(mode.ownsRequest(panel7.port.sender, "auth8")).toBe(false);
+  const response = await new Promise((resolve) =>
+    api.runtime.onMessage.emit(
+      { customSidePanel: "close", key: "auth8" },
+      panel7.port.sender,
+      resolve,
+    ),
+  );
+  expect(response).toEqual({ closed: false });
+  expect(mode.hasRequest("auth8")).toBe(true);
+  await new Promise((resolve) =>
+    api.runtime.onMessage.emit(
+      { customSidePanel: "closeVirtual", windowId: first!.id },
+      panel7.port.sender,
+      resolve,
+    ),
+  );
+  expect(mode.hasRequest("auth7")).toBe(false);
+  expect(mode.hasRequest("auth8")).toBe(true);
+});
+
+test.each([
+  "wrong-token",
+  "different-path",
+  "different-location",
+  "ordinary-tab",
+  "wrong-documentId",
+  "duplicate-contexts",
+  "non-panel-context",
+])("rejects missing-documentId fallback for %s", async (reason) => {
+  const { port, context } = tokenPanel();
+  if (reason === "wrong-token") {
+    context.documentUrl = tokenPanel(token8).context.documentUrl;
+  }
+  if (reason === "different-path") {
+    context.documentUrl = context.documentUrl.replace("popup/index.html", "other/index.html");
+  }
+  if (reason === "different-location") {
+    context.documentUrl = context.documentUrl.replace("uilocation=sidepanel", "uilocation=tab");
+  }
+  if (reason === "ordinary-tab") {
+    Object.assign(port.sender, { tab: { id: 3 } });
+  }
+  if (reason === "wrong-documentId") {
+    port.sender.documentId = "different-document";
+  }
+  if (reason === "non-panel-context") {
+    context.contextType = "TAB";
+  }
+  api.runtime.getContexts.mockResolvedValue(
+    reason === "duplicate-contexts"
+      ? [context, { ...context, documentId: "duplicate" }]
+      : [context],
+  );
+  api.runtime.onConnect.emit(port);
+  await settleRegistration();
+  expect(port.disconnect).toHaveBeenCalledTimes(1);
+  expect(port.postMessage).not.toHaveBeenCalled();
+  expect(mode.ownsRequest(port.sender, "auth_unlockExtension")).toBe(false);
+});
+
+test.each(["", "&sidePanelDocument=invalid"])(
+  "a native panel commits identity before rendering and never reloads an identified document (%s)",
+  (suffix) => {
+    const replace = jest.fn();
+    const location = { href: `${sender.url}?uilocation=sidepanel${suffix}#/lock`, replace };
+    const win = { location } as unknown as Window;
+    expect(mode.prepareViewDocument(win)).toBe(false);
+    expect(replace).toHaveBeenCalledTimes(1);
+    const committed = new URL(replace.mock.calls[0][0]);
+    expect(committed.searchParams.get("sidePanelDocument")).toMatch(/^[\da-f-]{36}$/);
+    expect(committed.searchParams.get("uilocation")).toBe("sidepanel");
+    expect(committed.hash).toBe("#/lock");
+    location.href = committed.href;
+    expect(mode.prepareViewDocument(win)).toBe(true);
+    expect(replace).toHaveBeenCalledTimes(1);
+  },
+);
+
+test("normal popup documents render immediately without changing their URL", () => {
+  const replace = jest.fn();
+  const win = { location: { href: sender.url, replace } } as unknown as Window;
+  expect(mode.prepareViewDocument(win)).toBe(true);
+  expect(replace).not.toHaveBeenCalled();
+});
+
+test("the native view reuses its committed identity when connecting and preserves it through every navigation", async () => {
+  const original = window.location.href;
+  window.history.replaceState(
+    null,
+    "",
+    "/?uilocation=sidepanel&sidePanelDocument=bdf45d95-b10e-4d60-b154-779d36310a07#/lock",
+  );
+  const port = nativePort();
+  let connectedToken: string | null = null;
+  api.runtime.connect.mockImplementation(() => {
+    connectedToken = new URL(window.location.href).searchParams.get("sidePanelDocument");
+    return port;
+  });
+  const navigate = jest.fn(async () => true);
+  const cleanup = mode.connectView(navigate);
+  try {
+    expect(connectedToken).toMatch(/^[\da-f-]{36}$/);
+    port.onMessage.emit({ type: "connected", windowId: 7, route: "/tabs/vault" });
+    port.onMessage.emit({
+      type: "navigate",
+      requestId: -1_000_001,
+      revision: 0,
+      url: `${sender.url}?uilocation=sidepanel&singleActionPopout=auth_unlockExtension#/lock`,
+    });
+    await settleRegistration();
+    port.onMessage.emit({ type: "finished" });
+    expect(navigate).toHaveBeenCalledTimes(3);
+    for (const [href] of navigate.mock.calls as unknown as Array<[string]>) {
+      expect(new URL(href).searchParams.get("sidePanelDocument")).toBe(connectedToken);
+    }
+  } finally {
+    cleanup();
+    window.history.replaceState(null, "", original);
+  }
+});
+
+test("two unidentified panels keep their reported windows separate even when their replies arrive in reverse order", async () => {
+  await mode.setEnabled(true);
+  const first = await mode.open("popup/index.html#/fido2", {
+    senderWindowId: 7,
+    singleActionKey: "window7",
+  });
+  const second = await mode.open("popup/index.html#/fido2", {
+    senderWindowId: 8,
+    singleActionKey: "window8",
+  });
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: "document7" },
+    { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: "document8" },
+  ]);
+  api.windows.get.mockImplementation(async (id: number) => ({ id, type: "normal" }));
+  api.windows.getLastFocused.mockClear();
+  const one = nativePort("document7");
+  const two = nativePort("document8");
+  const oneId = await askForWindow(one);
+  const twoId = await askForWindow(two);
+  two.onMessage.emit({ type: "identifiedWindow", requestId: twoId, windowId: 8 });
+  one.onMessage.emit({ type: "identifiedWindow", requestId: oneId, windowId: 7 });
+  await settleRegistration();
+  expect(one.postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "navigate", requestId: first!.id }),
+  );
+  expect(one.postMessage).not.toHaveBeenCalledWith(
+    expect.objectContaining({ type: "navigate", requestId: second!.id }),
+  );
+  expect(two.postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "navigate", requestId: second!.id }),
+  );
+  expect(two.postMessage).not.toHaveBeenCalledWith(
+    expect.objectContaining({ type: "navigate", requestId: first!.id }),
+  );
+  expect(api.windows.getLastFocused).not.toHaveBeenCalled();
+});
+
+test.each([-1, 1.5, NaN, "7", undefined])(
+  "rejects an invalid identified owner %s without falling back to another window",
+  async (windowId) => {
+    api.runtime.getContexts.mockResolvedValue([
+      { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: sender.documentId },
+    ]);
+    const port = nativePort();
+    const requestId = await askForWindow(port);
+    api.windows.getLastFocused.mockClear();
+    port.onMessage.emit({ type: "identifiedWindow", requestId, windowId });
+    await settleRegistration();
+    expect(port.disconnect).toHaveBeenCalledTimes(1);
+    expect(port.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "connected" }),
+    );
+    expect(api.windows.getLastFocused).not.toHaveBeenCalled();
+  },
+);
+
+test.each(["popup", "missing"])("rejects an identified %s window", async (type) => {
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: sender.documentId },
+  ]);
+  if (type === "missing") {
+    api.windows.get.mockRejectedValue(new Error("No such window") as never);
+  } else {
+    api.windows.get.mockResolvedValue({ id: 7, type });
+  }
+  const port = nativePort();
+  const requestId = await askForWindow(port);
+  port.onMessage.emit({ type: "identifiedWindow", requestId, windowId: 7 });
+  await settleRegistration();
+  expect(port.disconnect).toHaveBeenCalledTimes(1);
+  expect(port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "connected" }));
+});
+
+test("only the matching identification response can complete a registration", async () => {
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: sender.documentId },
+  ]);
+  const port = nativePort();
+  const requestId = await askForWindow(port);
+  port.onMessage.emit({ type: "identifiedWindow", requestId: requestId + 1, windowId: 7 });
+  await settleRegistration();
+  expect(port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "connected" }));
+  port.onMessage.emit({ type: "identifiedWindow", requestId, windowId: 7 });
+  await settleRegistration();
+  expect(port.postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "connected", windowId: 7 }),
+  );
+});
+
+test("an identification timeout removes its listeners and ignores late replies", async () => {
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: sender.documentId },
+  ]);
+  const timers = jest.getTimerCount();
+  const port = nativePort();
+  const requestId = await askForWindow(port);
+  await jest.advanceTimersByTimeAsync(5000);
+  expect(port.disconnect).toHaveBeenCalledTimes(1);
+  expect(port.onMessage.listeners).toHaveLength(0);
+  expect(port.onDisconnect.listeners).toHaveLength(0);
+  expect(jest.getTimerCount()).toBe(timers);
+  port.onMessage.emit({ type: "identifiedWindow", requestId, windowId: 7 });
+  await settleRegistration();
+  expect(port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "connected" }));
+});
+
+test("disconnecting while identification is pending clears the timeout and cannot register later", async () => {
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: sender.documentId },
+  ]);
+  const timers = jest.getTimerCount();
+  const port = nativePort();
+  const requestId = await askForWindow(port);
+  port.onDisconnect.emit();
+  await settleRegistration();
+  expect(jest.getTimerCount()).toBe(timers);
+  expect(port.onMessage.listeners).toHaveLength(0);
+  port.onMessage.emit({ type: "identifiedWindow", requestId, windowId: 7 });
+  await jest.advanceTimersByTimeAsync(5000);
+  expect(port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "connected" }));
+});
+
+test("a disconnect before native-context lookup finishes prevents a later identity request", async () => {
+  let finish!: (
+    contexts: Array<{ contextType: string; windowId: number; tabId: number; documentId: string }>,
+  ) => void;
+  api.runtime.getContexts.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const port = nativePort();
+  api.runtime.onConnect.emit(port);
+  expect(port.onDisconnect.listeners).toHaveLength(1);
+  port.onDisconnect.emit();
+  finish([{ contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: sender.documentId }]);
+  await settleRegistration();
+  expect(port.postMessage).not.toHaveBeenCalled();
+  expect(port.onMessage.listeners).toHaveLength(0);
+});
+
+test("a normal tab cannot identify itself as a panel even when it supplies an existing normal window", async () => {
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "TAB", windowId: 7, tabId: 3, documentId: sender.documentId },
+  ]);
+  const port = nativePort();
+  api.runtime.onConnect.emit(port);
+  await settleRegistration();
+  port.onMessage.emit({ type: "identifiedWindow", requestId: 1, windowId: 7 });
+  expect(port.disconnect).toHaveBeenCalledTimes(1);
+  expect(port.postMessage).not.toHaveBeenCalled();
+});
+
+test("an already-known native window skips identification", async () => {
+  const port = nativePort();
+  api.runtime.onConnect.emit(port);
+  await settleRegistration();
+  expect(port.postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "connected", windowId: 7 }),
+  );
+  expect(port.postMessage).not.toHaveBeenCalledWith(
+    expect.objectContaining({ type: "identifyWindow" }),
+  );
+});
+
+test("the native view reports its own current window through the identification handshake", async () => {
+  const original = window.location.href;
+  window.history.replaceState(
+    null,
+    "",
+    "/?uilocation=sidepanel&sidePanelDocument=bdf45d95-b10e-4d60-b154-779d36310a07#/lock",
+  );
+  const port = nativePort();
+  api.runtime.connect.mockReturnValue(port);
+  api.windows.getCurrent.mockResolvedValue({ id: 8, type: "normal" });
+  api.windows.getLastFocused.mockClear();
+  const cleanup = mode.connectView(jest.fn());
+  try {
+    port.onMessage.emit({ type: "identifyWindow", requestId: 17 });
+    await settleRegistration();
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "identifiedWindow",
+      requestId: 17,
+      windowId: 8,
+    });
+    expect(api.windows.getLastFocused).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    window.history.replaceState(null, "", original);
+  }
+});
+
+test("a disposed view never sends an in-flight window identity to a new connection", async () => {
+  const original = window.location.href;
+  window.history.replaceState(
+    null,
+    "",
+    "/?uilocation=sidepanel&sidePanelDocument=bdf45d95-b10e-4d60-b154-779d36310a07#/lock",
+  );
+  const port = nativePort();
+  api.runtime.connect.mockReturnValue(port);
+  let finish!: (owner: { id: number; type: string }) => void;
+  api.windows.getCurrent.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const cleanup = mode.connectView(jest.fn());
+  port.onMessage.emit({ type: "identifyWindow", requestId: 18 });
+  cleanup();
+  finish({ id: 8, type: "normal" });
+  await settleRegistration();
+  expect(port.postMessage).not.toHaveBeenCalled();
+  window.history.replaceState(null, "", original);
+});
+
+test("window validation is bounded by the registration deadline and ignores a late successful lookup", async () => {
+  api.runtime.getContexts.mockResolvedValue([
+    { contextType: "SIDE_PANEL", windowId: -1, tabId: -1, documentId: sender.documentId },
+  ]);
+  let finish!: (owner: { id: number; type: string }) => void;
+  api.windows.get.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const port = nativePort();
+  const requestId = await askForWindow(port);
+  port.onMessage.emit({ type: "identifiedWindow", requestId, windowId: 7 });
+  await settleRegistration();
+  await jest.advanceTimersByTimeAsync(5000);
+  expect(port.disconnect).toHaveBeenCalledTimes(1);
+  finish({ id: 7, type: "normal" });
+  await settleRegistration();
+  expect(port.onMessage.listeners).toHaveLength(0);
+  expect(port.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "connected" }));
 });

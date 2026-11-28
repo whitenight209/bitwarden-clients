@@ -44,6 +44,57 @@ describe("Browser Utils Service", () => {
     );
   });
 
+  describe("application versions", () => {
+    let getManifestSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      getManifestSpy = jest.spyOn(chrome.runtime, "getManifest");
+    });
+
+    afterEach(() => {
+      getManifestSpy.mockRestore();
+    });
+
+    it.each([
+      ["2026.11.0", "2026.11.0"],
+      ["2026.11.0.6", "2026.11.0"],
+      ["2026.11.0-beta.1", "2026.11.0"],
+      ["2026.11.0+build.123", "2026.11.0"],
+      ["2026.11.0.6-beta.1", "2026.11.0"],
+      ["2026.11.0.6+build.123", "2026.11.0"],
+    ])(
+      "uses %s as protocol version %s without changing the displayed version",
+      async (version, protocolVersion) => {
+        getManifestSpy.mockReturnValue({
+          manifest_version: 3,
+          name: "Bitwarden",
+          version,
+        });
+
+        await expect(browserPlatformUtilsService.getApplicationVersionNumber()).resolves.toBe(
+          protocolVersion,
+        );
+        await expect(browserPlatformUtilsService.getApplicationVersion()).resolves.toBe(version);
+      },
+    );
+
+    it("preserves version_name for display while using the manifest version for the API", async () => {
+      getManifestSpy.mockReturnValue({
+        manifest_version: 3,
+        name: "Bitwarden",
+        version: "2026.11.0.6",
+        version_name: "2026.11.0.6-custom",
+      });
+
+      await expect(browserPlatformUtilsService.getApplicationVersion()).resolves.toBe(
+        "2026.11.0.6-custom",
+      );
+      await expect(browserPlatformUtilsService.getApplicationVersionNumber()).resolves.toBe(
+        "2026.11.0",
+      );
+    });
+  });
+
   describe("getBrowser", () => {
     const originalUserAgent = navigator.userAgent;
     // Reset the userAgent.

@@ -47,8 +47,9 @@ afterEach(() => {
 
 test("waits for a slow routed unlock form instead of relying on a startup delay", async () => {
   stop = focusSidePanelUnlock(window, request);
+  expect(window.focus).toHaveBeenCalledTimes(1);
   jest.advanceTimersByTime(10_000);
-  expect(window.focus).not.toHaveBeenCalled();
+  expect(window.focus).toHaveBeenCalledTimes(1);
   const input = addControl();
   await renderFrame();
   expect(window.focus).toHaveBeenCalled();
@@ -71,7 +72,8 @@ test("waits for layout before focusing", async () => {
   jest.mocked(input.getClientRects).mockReturnValue([] as unknown as DOMRectList);
   stop = focusSidePanelUnlock(window, request);
   await renderFrame();
-  expect(window.focus).not.toHaveBeenCalled();
+  expect(window.focus).toHaveBeenCalled();
+  expect(document.activeElement).not.toBe(input);
   jest.mocked(input.getClientRects).mockReturnValue([{}] as unknown as DOMRectList);
   await renderFrame();
   expect(document.activeElement).toBe(input);
@@ -129,6 +131,24 @@ test("ignores other side panel requests", async () => {
   stop = focusSidePanelUnlock(window, request.replace("auth_unlockExtension", "vault_Fido2Popout"));
   await renderFrame();
   expect(document.activeElement).not.toBe(input);
+  expect(window.focus).not.toHaveBeenCalled();
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test("focuses a ready unlock control synchronously while the initiating gesture is available", () => {
+  const input = addControl();
+  input.value = "preserve-current-input";
+  stop = focusSidePanelUnlock(window, request);
+  expect(window.focus).toHaveBeenCalledTimes(1);
+  expect(document.activeElement).toBe(input);
+  expect(input.value).toBe("preserve-current-input");
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+test("does not focus a different route even when the request is an unlock", () => {
+  window.history.replaceState(null, "", "/?uilocation=sidepanel#/tabs/vault");
+  stop = focusSidePanelUnlock(window, request);
+  expect(window.focus).not.toHaveBeenCalled();
   expect(jest.getTimerCount()).toBe(0);
 });
 

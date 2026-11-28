@@ -208,20 +208,45 @@ export class AutofillInlineMenuContainer {
       // One-shot runtime messages carry the click into the worker. Do not defer opening
       // until after the ordinary port pipeline's async authentication/tab lookups.
       const port = this.port;
+      let posted = false;
+      const postOriginal = () => {
+        if (posted) {
+          return;
+        }
+        posted = true;
+        try {
+          port.postMessage(message);
+        } catch {
+          // Navigation can disconnect the original inline iframe while reopening.
+        }
+      };
       void chrome.runtime
         .sendMessage({
           command: INLINE_MENU_UI_MESSAGE,
           navigation: message,
           portName: port.name,
         })
-        .then(
-          (response) => {
-            if (!response?.handled) {
-              port.postMessage(message);
+        .then((response) => {
+          if (
+            response?.handled &&
+            message.command === "unlockVault" &&
+            Number.isInteger(response.reopenWindowId) &&
+            response.reopenWindowId >= 0
+          ) {
+            try {
+              // This foreground continuation retains the original click's
+              // activation after the worker confirms the old panel is closed.
+              void chrome.sidePanel.open({ windowId: response.reopenWindowId }).catch(() => {});
+            } catch {
+              // The worker already dispatched this unlock. Its queued request
+              // remains available through the next ordinary panel opening.
             }
-          },
-          () => port.postMessage(message),
-        );
+            return;
+          }
+          if (!response?.handled) {
+            postOriginal();
+          }
+        }, postOriginal);
       return;
     }
     this.port.postMessage(message);

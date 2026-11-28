@@ -3506,6 +3506,147 @@ describe("OverlayBackground", () => {
   });
 
   describe("handle extension onMessage", () => {
+    let prepareRefresh: jest.SpyInstance;
+    beforeEach(() => {
+      prepareRefresh = jest.spyOn(SidePanelMode, "prepareUnlockRefresh").mockReturnValue(undefined);
+    });
+    afterEach(() => prepareRefresh.mockRestore());
+
+    function trustedInlineNavigation(command = "unlockVault") {
+      const sender = {
+        id: chrome.runtime.id,
+        tab: createChromeTabMock({ id: 1, windowId: 7 }),
+        frameId: 3,
+        documentId: "inline-menu-container",
+      };
+      const port = createPortSpyMock(AutofillOverlayPort.ListMessageConnector);
+      port.sender = sender;
+      overlayBackground["inlineMenuListMessageConnectorPort"] = port;
+      portKeyForTabSpy[1] = "unlock-key";
+      return {
+        sender,
+        port,
+        message: {
+          command: "inlineMenuUserNavigation",
+          portName: port.name,
+          navigation: { command, portKey: "unlock-key" },
+        },
+      };
+    }
+
+    it("starts the original unlock once while keeping the refresh response channel alive", async () => {
+      const { message, sender } = trustedInlineNavigation();
+      let finishRefresh: (windowId: number) => void;
+      prepareRefresh.mockReturnValue(new Promise<number>((resolve) => (finishRefresh = resolve)));
+      const dispatch = jest
+        .spyOn(overlayBackground as any, "handleOverlayElementPortMessage")
+        .mockImplementation();
+      const respond = jest.fn();
+      try {
+        expect(overlayBackground["handleExtensionMessage"](message, sender, respond)).toBe(true);
+        expect(prepareRefresh).toHaveBeenCalledWith(7);
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(prepareRefresh.mock.invocationCallOrder[0]).toBeLessThan(
+          dispatch.mock.invocationCallOrder[0],
+        );
+        expect(respond).not.toHaveBeenCalled();
+        finishRefresh(7);
+        await flushPromises();
+        expect(respond).toHaveBeenCalledTimes(1);
+        expect(respond).toHaveBeenCalledWith({ handled: true, reopenWindowId: 7 });
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(openUnlockPopoutSpy).not.toHaveBeenCalled();
+      } finally {
+        dispatch.mockRestore();
+      }
+    });
+
+    it("runs the normal unlock once if asynchronous refresh preparation is unnecessary", async () => {
+      const { message, sender, port } = trustedInlineNavigation();
+      prepareRefresh.mockResolvedValue(undefined);
+      const dispatch = jest
+        .spyOn(overlayBackground as any, "handleOverlayElementPortMessage")
+        .mockImplementation();
+      const reveal = jest.spyOn(SidePanelMode, "reveal").mockResolvedValue();
+      const respond = jest.fn();
+      try {
+        expect(overlayBackground["handleExtensionMessage"](message, sender, respond)).toBe(true);
+        await flushPromises();
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(dispatch).toHaveBeenCalledWith(message.navigation, port);
+        expect(respond).toHaveBeenCalledWith({ handled: true });
+      } finally {
+        dispatch.mockRestore();
+        reveal.mockRestore();
+      }
+    });
+
+    it("logs refresh preparation failure without redispatching the original unlock", async () => {
+      const { message, sender } = trustedInlineNavigation();
+      const error = new Error("Panel close failed");
+      prepareRefresh.mockRejectedValue(error);
+      const dispatch = jest
+        .spyOn(overlayBackground as any, "handleOverlayElementPortMessage")
+        .mockImplementation();
+      const reveal = jest.spyOn(SidePanelMode, "reveal").mockResolvedValue();
+      const respond = jest.fn();
+      try {
+        expect(overlayBackground["handleExtensionMessage"](message, sender, respond)).toBe(true);
+        await flushPromises();
+        expect(logService.error).toHaveBeenCalledWith(error);
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(respond).toHaveBeenCalledTimes(1);
+        expect(respond).toHaveBeenCalledWith({ handled: true });
+      } finally {
+        dispatch.mockRestore();
+        reveal.mockRestore();
+      }
+    });
+
+    it("keeps the inline iframe until the native unlock opening has completed", async () => {
+      const { sender, port } = trustedInlineNavigation();
+      let finishOpening: () => void;
+      openUnlockPopoutSpy.mockImplementation(
+        () => new Promise<void>((resolve) => (finishOpening = resolve)),
+      );
+      const close = jest.spyOn(overlayBackground as any, "closeInlineMenu").mockImplementation();
+      try {
+        const opening = overlayBackground["unlockVault"](port);
+        expect(openUnlockPopoutSpy).toHaveBeenCalledWith(sender.tab, expect.any(Function));
+        expect(close).not.toHaveBeenCalled();
+        finishOpening();
+        await opening;
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(close).toHaveBeenCalledWith(sender, { forceCloseInlineMenu: true });
+      } finally {
+        close.mockRestore();
+      }
+    });
+
+    it.each(["viewSelectedCipher", "addNewVaultItem"])(
+      "keeps %s on its existing synchronous path",
+      (command) => {
+        const { message, sender, port } = trustedInlineNavigation(command);
+        const dispatch = jest
+          .spyOn(overlayBackground as any, "handleOverlayElementPortMessage")
+          .mockImplementation();
+        const reveal = jest.spyOn(SidePanelMode, "reveal").mockResolvedValue();
+        const respond = jest.fn();
+        try {
+          expect(
+            overlayBackground["handleExtensionMessage"](message, sender, respond),
+          ).toBeUndefined();
+          expect(prepareRefresh).not.toHaveBeenCalled();
+          expect(reveal).toHaveBeenCalledWith(7);
+          expect(dispatch).toHaveBeenCalledWith(message.navigation, port);
+          expect(respond).toHaveBeenCalledWith({ handled: true });
+        } finally {
+          dispatch.mockRestore();
+          reveal.mockRestore();
+        }
+      },
+    );
+
     it("reveals the native panel before running the inline unlock handler and keeps the unlock retry", async () => {
       const sender = {
         id: chrome.runtime.id,
@@ -3546,7 +3687,7 @@ describe("OverlayBackground", () => {
       }
     });
 
-    it.each(["nonce", "document", "frame", "tab", "command"])(
+    it.each(["nonce", "document", "frame", "tab", "command", "extension"])(
       "rejects an inline UI message with a different %s",
       (mismatch) => {
         const sender = {
@@ -3568,6 +3709,9 @@ describe("OverlayBackground", () => {
         if (mismatch === "tab") {
           sender.tab = createChromeTabMock({ id: 2 });
         }
+        if (mismatch === "extension") {
+          sender.id = "foreign-extension";
+        }
         const reveal = jest.spyOn(SidePanelMode, "reveal").mockResolvedValue();
         try {
           overlayBackground["handleExtensionMessage"](
@@ -3583,6 +3727,7 @@ describe("OverlayBackground", () => {
             jest.fn(),
           );
           expect(reveal).not.toHaveBeenCalled();
+          expect(prepareRefresh).not.toHaveBeenCalled();
           expect(openUnlockPopoutSpy).not.toHaveBeenCalled();
         } finally {
           reveal.mockRestore();

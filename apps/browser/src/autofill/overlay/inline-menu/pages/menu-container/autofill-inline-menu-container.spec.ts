@@ -185,6 +185,124 @@ describe("AutofillInlineMenuContainer", () => {
       expect(port.postMessage).toHaveBeenCalledWith(message);
     });
 
+    describe("foreground native unlock refresh", () => {
+      let previousSidePanel: PropertyDescriptor | undefined;
+      let open: jest.Mock;
+      const unlockMessage = () => ({
+        command: "unlockVault",
+        portKey,
+        token: autofillInlineMenuContainer["token"],
+      });
+      beforeEach(() => {
+        previousSidePanel = Object.getOwnPropertyDescriptor(chrome, "sidePanel");
+        open = jest.fn().mockResolvedValue(undefined);
+        Object.defineProperty(chrome, "sidePanel", {
+          configurable: true,
+          value: { open },
+        });
+      });
+      afterEach(() => {
+        if (previousSidePanel) {
+          Object.defineProperty(chrome, "sidePanel", previousSidePanel);
+        } else {
+          delete (chrome as any).sidePanel;
+        }
+      });
+
+      it("reopens from the runtime response without redispatching the background-owned unlock", async () => {
+        jest.spyOn(chrome.runtime, "sendMessage").mockImplementationOnce(async () => ({
+          handled: true,
+          reopenWindowId: 7,
+        }));
+        let finishOpen: () => void;
+        open.mockImplementation(() => new Promise<void>((resolve) => (finishOpen = resolve)));
+        const message = unlockMessage();
+        postWindowMessage(message, "null", iframe.contentWindow as any);
+        await Promise.resolve();
+        expect(open).toHaveBeenCalledWith({ windowId: 7 });
+        expect(port.postMessage).not.toHaveBeenCalled();
+        finishOpen();
+        await Promise.resolve();
+        expect(port.postMessage).not.toHaveBeenCalled();
+      });
+
+      it("does not duplicate the queued unlock if native reopening rejects", async () => {
+        jest.spyOn(chrome.runtime, "sendMessage").mockImplementationOnce(async () => ({
+          handled: true,
+          reopenWindowId: 7,
+        }));
+        open.mockRejectedValue(new Error("User activation expired"));
+        const message = unlockMessage();
+        postWindowMessage(message, "null", iframe.contentWindow as any);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(port.postMessage).not.toHaveBeenCalled();
+      });
+
+      it("does not depend on the originating port surviving native reopening", async () => {
+        jest.spyOn(chrome.runtime, "sendMessage").mockImplementationOnce(async () => ({
+          handled: true,
+          reopenWindowId: 7,
+        }));
+        jest.spyOn(port, "postMessage").mockImplementation(() => {
+          throw new Error("Attempting to use a disconnected port object");
+        });
+        postWindowMessage(unlockMessage(), "null", iframe.contentWindow as any);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(port.postMessage).not.toHaveBeenCalled();
+      });
+
+      it.each([false, true])(
+        "uses the legacy transport fallback once even if the port is disconnected: %s",
+        async (disconnected) => {
+          jest.spyOn(chrome.runtime, "sendMessage").mockImplementationOnce(async () => {
+            throw new Error("Receiving end does not exist");
+          });
+          if (disconnected) {
+            jest.spyOn(port, "postMessage").mockImplementation(() => {
+              throw new Error("Attempting to use a disconnected port object");
+            });
+          }
+          const message = unlockMessage();
+          postWindowMessage(message, "null", iframe.contentWindow as any);
+          await Promise.resolve();
+          expect(open).not.toHaveBeenCalled();
+          expect(port.postMessage).toHaveBeenCalledTimes(1);
+          expect(port.postMessage).toHaveBeenCalledWith(message);
+        },
+      );
+
+      it.each([-1, 1.5, "7", null, undefined])(
+        "does not reopen an invalid target window %s",
+        async (windowId) => {
+          jest.spyOn(chrome.runtime, "sendMessage").mockImplementationOnce(async () => ({
+            handled: true,
+            reopenWindowId: windowId,
+          }));
+          postWindowMessage(unlockMessage(), "null", iframe.contentWindow as any);
+          await Promise.resolve();
+          expect(open).not.toHaveBeenCalled();
+          expect(port.postMessage).not.toHaveBeenCalled();
+        },
+      );
+
+      it("does not change the foreground behavior of other inline navigation commands", async () => {
+        jest.spyOn(chrome.runtime, "sendMessage").mockImplementationOnce(async () => ({
+          handled: true,
+          reopenWindowId: 7,
+        }));
+        postWindowMessage(
+          { ...unlockMessage(), command: "viewSelectedCipher" },
+          "null",
+          iframe.contentWindow as any,
+        );
+        await Promise.resolve();
+        expect(open).not.toHaveBeenCalled();
+        expect(port.postMessage).not.toHaveBeenCalled();
+      });
+    });
+
     it("posts a message to the inline menu iframe from the parent", () => {
       const message = { command: "checkInlineMenuButtonFocused", portKey };
 

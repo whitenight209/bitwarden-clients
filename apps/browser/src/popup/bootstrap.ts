@@ -2,6 +2,7 @@ import { enableProdMode, provideZoneChangeDetection } from "@angular/core";
 import { platformBrowser } from "@angular/platform-browser";
 
 import { BrowserPlatformUtilsService } from "../platform/services/platform-utils/browser-platform-utils.service";
+import { SidePanelMode } from "../platform/side-panel/side-panel-mode";
 
 import { AppModule } from "./app.module";
 
@@ -20,4 +21,6 @@ function init() {
   });
 }
 
-init();
+if (SidePanelMode.prepareViewDocument()) {
+  init();
+}
