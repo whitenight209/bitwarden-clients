@@ -12,6 +12,7 @@ import { UserId } from "@bitwarden/common/types/guid";
 import { StateProvider } from "@bitwarden/state";
 
 import { BrowserApi } from "../../../../platform/browser/browser-api";
+import { SidePanelMode } from "../../../../platform/side-panel/side-panel-mode";
 
 import { ImportConfirmationBrowserComponent } from "./import-confirmation-browser.component";
 import { ImportConfirmationStateService } from "./import-confirmation-state.service";
@@ -264,6 +265,25 @@ describe("ImportConfirmationBrowserComponent", () => {
 
     expect(router.navigate).toHaveBeenCalledWith(["/tabs/vault"]);
     expect(actionsService.openPopup).not.toHaveBeenCalled();
+  });
+
+  it("requires panel navigation and starts the retry within the button click", async () => {
+    const confirm = jest.spyOn(SidePanelMode, "openAndConfirm").mockResolvedValue(false);
+    const reveal = jest.spyOn(SidePanelMode, "reveal").mockReturnValue(undefined);
+    const reset = jest.spyOn(ImportConfirmationStateService.prototype, "resetPopupHistory");
+    isPopupOpen.mockResolvedValue(true);
+    await create();
+
+    expect(text()).not.toContain("openedExtensionTitle");
+    expect(isPopupOpen).not.toHaveBeenCalled();
+    reset.mockClear();
+    confirm.mockResolvedValue(true);
+    button("import-confirmation_button_open-extension")!.click();
+    await settle();
+
+    expect(reveal.mock.invocationCallOrder[0]).toBeLessThan(reset.mock.invocationCallOrder[0]);
+    expect(actionsService.openPopup).not.toHaveBeenCalled();
+    expect(text()).toContain("openedExtensionTitle");
   });
 
   it("drops its own copy of the result when destroyed, and leaves the popup's", async () => {

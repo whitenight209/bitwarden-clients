@@ -45,6 +45,14 @@ test("OFF restores popup behavior without reinstalling", async ({ popup }) => {
       async () => (await chrome.sidePanel.getPanelBehavior()).openPanelOnActionClick,
     ),
   ).toBe(false);
+  await popup.evaluate(() => chrome.action.openPopup());
+  await expect
+    .poll(() =>
+      popup.evaluate(
+        async () => (await chrome.runtime.getContexts({ contextTypes: ["POPUP"] })).length,
+      ),
+    )
+    .toBe(1);
 });
 
 test("keeps the selected mode across a complete extension reload", async ({ popup, context }) => {
@@ -213,7 +221,7 @@ test("routes an internal screen request inside the existing native panel", async
   }
 });
 
-test("routes a request to the second window without navigating the first window's panel", async ({
+test("acknowledges a web vault request only after its own window's panel accepts it", async ({
   popup,
   context,
 }) => {
@@ -221,26 +229,63 @@ test("routes a request to the second window without navigating the first window'
   await expect.poll(() => popup.evaluate(() => chrome.action.getPopup({}))).toBe("");
   const firstWindow = await openNativeSidePanel(popup);
   const first = await NativeSidePanel.attach(context, popup, firstWindow);
+  const newPage = context.waitForEvent("page");
   const secondWindow = await popup.evaluate(
     async () => (await chrome.windows.create({ url: "about:blank", type: "normal" })).id!,
   );
+  const vault = await newPage;
+  const origin = "https://vault.bitwarden.com";
+  const url = origin + "/side-panel-e2e";
+  await vault.route(url, (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Web vault</title>" }),
+  );
+  await vault.goto(url);
+  const vaultSession = await context.newCDPSession(vault);
+  const openFromVault = async (requestId: number) => {
+    const { result, exceptionDetails } = await vaultSession.send("Runtime.evaluate", {
+      expression: `new Promise((resolve) => {
+        const listener = (event) => {
+          if (event.data?.command === "popupOpened" && event.data.requestId === ${requestId}) {
+            clearTimeout(timer);
+            window.removeEventListener("message", listener);
+            resolve(true);
+          }
+        };
+        const timer = setTimeout(() => {
+          window.removeEventListener("message", listener);
+          resolve(false);
+        }, 1800);
+        window.addEventListener("message", listener);
+        window.postMessage({
+          command: "openBrowserExtensionToUrl",
+          url: "popup/index.html#/",
+          requestId: ${requestId},
+        }, location.origin);
+      })`,
+      awaitPromise: true,
+      returnByValue: true,
+      userGesture: false,
+    });
+    expect(exceptionDetails).toBeUndefined();
+    return result.value;
+  };
   let second: NativeSidePanel | undefined;
   try {
+    await expect.poll(() => first.evaluate<string>("location.hash")).toMatch(/^#\//);
+    const firstRoute = await first.evaluate<string>("location.hash");
+    await popup.bringToFront();
+    const firstRequest = openFromVault(1);
+    await expect.poll(() => popup.evaluate(() => chrome.action.getBadgeText({}))).toBe("!");
+    await expect(firstRequest).resolves.toBe(false);
+    expect(await first.evaluate<string>("location.hash")).toBe(firstRoute);
+
     await openNativeSidePanel(popup, secondWindow);
     second = await NativeSidePanel.attach(context, popup, secondWindow);
-    const firstRoute = await first.evaluate<string>("location.hash");
-    await popup.evaluate(
-      (id) =>
-        chrome.runtime.sendMessage({
-          customSidePanel: "open",
-          url: chrome.runtime.getURL("popup/index.html#/generator"),
-          options: { senderWindowId: id },
-        }),
-      secondWindow,
-    );
-    await expect.poll(() => second!.evaluate<string>("location.hash")).toBe("#/generator");
+    await expect.poll(() => second!.evaluate<string>("location.hash")).toBe("#/tabs/vault");
+    await expect(openFromVault(2)).resolves.toBe(true);
     expect(await first.evaluate<string>("location.hash")).toBe(firstRoute);
   } finally {
+    await vaultSession.detach();
     await first.dispose();
     await second?.dispose();
     await popup.evaluate((id) => chrome.windows.remove(id), secondWindow);

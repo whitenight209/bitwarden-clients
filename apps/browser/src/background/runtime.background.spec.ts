@@ -15,7 +15,7 @@ import { LogService } from "@bitwarden/common/platform/abstractions/log.service"
 import { MessagingService } from "@bitwarden/common/platform/abstractions/messaging.service";
 import { Message, IntraprocessMessageSender } from "@bitwarden/common/platform/messaging";
 import { UserId } from "@bitwarden/common/types/guid";
-import { CipherType } from "@bitwarden/common/vault/enums";
+import { CipherType, ExtensionPageUrls } from "@bitwarden/common/vault/enums";
 import { VaultMessages } from "@bitwarden/common/vault/enums/vault-messages.enum";
 import { CipherView } from "@bitwarden/common/vault/models/view/cipher.view";
 
@@ -672,6 +672,7 @@ describe("RuntimeBackground vault referrer gating", () => {
 
   let runtimeBackground: RuntimeBackground;
   let environmentService: MockProxy<BrowserEnvironmentService>;
+  let main: MockProxy<MainBackground>;
 
   beforeEach(() => {
     (chrome.runtime as any).onInstalled = { addListener: jest.fn() };
@@ -684,7 +685,19 @@ describe("RuntimeBackground vault referrer gating", () => {
       { key: Region.US, domain: "bitwarden.com", urls: { webVault: regionWebVaultUrl } },
     ] as RegionConfig[]);
 
+    main = mock<MainBackground>();
+    const accountService = mock<AccountService>();
+    accountService.accounts$ = new BehaviorSubject({
+      ["user-1" as UserId]: {
+        email: "user@example.test",
+        emailVerified: true,
+        name: undefined,
+        creationDate: undefined,
+      },
+    });
     runtimeBackground = createRuntimeBackground({
+      main,
+      accountService,
       environmentService,
       messagingService: mock<MessagingService>(),
     });
@@ -692,6 +705,36 @@ describe("RuntimeBackground vault referrer gating", () => {
 
   afterEach(() => {
     jest.resetAllMocks();
+  });
+
+  it.each([true, false])(
+    "replies to the requesting web vault with its navigation result (%s)",
+    async (navigated) => {
+      main.openTheExtensionToPage.mockResolvedValue(navigated);
+      const result = await runtimeBackground.processMessageWithSender(
+        {
+          command: VaultMessages.OpenBrowserExtensionToUrl,
+          url: ExtensionPageUrls.AtRiskPasswords,
+        },
+        { origin: environmentWebVaultUrl, tab: createChromeTabMock({ windowId: 8 }) },
+      );
+
+      expect(main.openTheExtensionToPage).toHaveBeenCalledWith(
+        ExtensionPageUrls.AtRiskPasswords,
+        8,
+      );
+      expect(result).toBe(navigated);
+    },
+  );
+
+  it("does not acknowledge an unknown web vault with a signed-in account", async () => {
+    const result = await runtimeBackground.processMessageWithSender(
+      { command: VaultMessages.OpenBrowserExtensionToUrl },
+      { origin: "https://unknown.test", tab: createChromeTabMock({ windowId: 8 }) },
+    );
+
+    expect(main.openTheExtensionToPage).not.toHaveBeenCalled();
+    expect(result).toBe(false);
   });
 
   describe("authResult", () => {
@@ -703,12 +746,11 @@ describe("RuntimeBackground vault referrer gating", () => {
     });
 
     it("opens the SSO popout when the referrer is the configured web vault", async () => {
-      await runtimeBackground.processMessageWithSender(
-        message("vault.selfhosted.test"),
-        {} as chrome.runtime.MessageSender,
-      );
+      await runtimeBackground.processMessageWithSender(message("vault.selfhosted.test"), {
+        tab: createChromeTabMock({ id: 0, windowId: 8 }),
+      });
 
-      expect(openSsoAuthResultPopout).toHaveBeenCalled();
+      expect(openSsoAuthResultPopout).toHaveBeenCalledWith(message("vault.selfhosted.test"), 8);
     });
 
     it("opens the SSO popout when the referrer is a known region's web vault", async () => {
@@ -748,9 +790,12 @@ describe("RuntimeBackground vault referrer gating", () => {
     });
 
     it("opens the WebAuthn popout when the referrer is the configured web vault", async () => {
-      await runtimeBackground.processMessage(message("vault.selfhosted.test"));
+      const payload = message("vault.selfhosted.test");
+      await runtimeBackground.processMessage(
+        stampSender(payload, { tab: createChromeTabMock({ windowId: 8 }) }),
+      );
 
-      expect(openTwoFactorAuthWebAuthnPopout).toHaveBeenCalled();
+      expect(openTwoFactorAuthWebAuthnPopout).toHaveBeenCalledWith(payload, 8);
     });
 
     it("opens the WebAuthn popout when the referrer is a known region's web vault", async () => {

@@ -10,8 +10,10 @@ describe("WebBrowserInteractionService", () => {
   const postMessage = jest.fn();
   window.postMessage = postMessage;
 
-  const dispatchEvent = (command: string) => {
-    window.dispatchEvent(new MessageEvent("message", { data: { command } }));
+  const dispatchEvent = (command: string, requestId?: number) => {
+    window.dispatchEvent(
+      new MessageEvent("message", { source: window, data: { command, requestId } }),
+    );
   };
 
   beforeEach(() => {
@@ -75,6 +77,8 @@ describe("WebBrowserInteractionService", () => {
 
       expect(postMessage).toHaveBeenCalledWith({
         command: VaultMessages.OpenBrowserExtensionToUrl,
+        url: undefined,
+        requestId: 1,
       });
 
       tick(1500);
@@ -86,6 +90,7 @@ describe("WebBrowserInteractionService", () => {
       expect(postMessage).toHaveBeenCalledWith({
         command: VaultMessages.OpenBrowserExtensionToUrl,
         url: ExtensionPageUrls.Index,
+        requestId: 1,
       });
 
       tick(1500);
@@ -100,6 +105,22 @@ describe("WebBrowserInteractionService", () => {
 
       await openExtensionPromise;
     });
+
+    it("waits for the acknowledgement for its own request", fakeAsync(() => {
+      const first = jest.fn();
+      const second = jest.fn();
+      void service.openExtension().then(first);
+      void service.openExtension(ExtensionPageUrls.AtRiskPasswords).then(second);
+
+      dispatchEvent(VaultMessages.PopupOpened, 2);
+      tick();
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledTimes(1);
+
+      dispatchEvent(VaultMessages.PopupOpened, 1);
+      tick();
+      expect(first).toHaveBeenCalledTimes(1);
+    }));
 
     it("rejects if the extension does not open within the timeout", fakeAsync(() => {
       service.openExtension().catch((error) => {

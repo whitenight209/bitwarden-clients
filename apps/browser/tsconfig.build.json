@@ -25,7 +25,6 @@
     "src/autofill/overlay/inline-menu/pages/list/bootstrap-autofill-inline-menu-list.ts",
     "src/autofill/overlay/inline-menu/pages/menu-container/bootstrap-autofill-inline-menu-container.ts",
     "src/vault/content/send-on-installed-message.ts",
-    "src/vault/content/send-popup-open-message.ts",
     "../../libs/common/src/autofill/constants"
   ],
   "exclude": ["**/*.spec.ts", "**/*.test.ts"]

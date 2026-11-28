@@ -10,6 +10,7 @@ import { I18nPipe } from "@bitwarden/ui-common";
 
 import { BrowserApi } from "../../../../platform/browser/browser-api";
 import BrowserPopupUtils from "../../../../platform/browser/browser-popup-utils";
+import { SidePanelMode } from "../../../../platform/side-panel/side-panel-mode";
 
 import { ImportConfirmationStateService } from "./import-confirmation-state.service";
 import {
@@ -70,6 +71,7 @@ export class ImportConfirmationBrowserComponent {
   }
 
   protected async onOpenExtension(): Promise<void> {
+    void SidePanelMode.reveal();
     this.retrying.set(true);
     try {
       await this.tryOpenExtension("toolbar", false);
@@ -93,9 +95,12 @@ export class ImportConfirmationBrowserComponent {
     this.phase.set(opened ? "opened" : onFailure);
   }
 
-  // openPopup() swallows its own failures, so success is confirmed by finding the popup.
   private async openPopup(): Promise<boolean> {
     await this.confirmationState.resetPopupHistory();
+    const navigated = await SidePanelMode.openAndConfirm();
+    if (navigated !== null) {
+      return navigated;
+    }
     await this.actionsService.openPopup();
     return this.popupOpened();
   }

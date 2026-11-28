@@ -2194,6 +2194,10 @@ export default class MainBackground {
     if (await SidePanelMode.open()) {
       return;
     }
+    await this.openToolbarPopup();
+  }
+
+  private async openToolbarPopup() {
     const browserAction = BrowserApi.getBrowserAction();
 
     if ("openPopup" in browserAction && typeof browserAction.openPopup === "function") {
@@ -2206,55 +2210,36 @@ export default class MainBackground {
     }
   }
 
-  /** Opens the `/at-risk-passwords` page within the popup */
-  async openAtRisksPasswordsPage() {
-    if (await SidePanelMode.open(ExtensionPageUrls.AtRiskPasswords)) {
-      return;
-    }
-    const browserAction = BrowserApi.getBrowserAction();
-
-    try {
-      // Set route of the popup before attempting to open it.
-      // If the vault is locked, this won't have an effect as the auth guards will
-      // redirect the user to the login page.
-      await browserAction.setPopup({ popup: ExtensionPageUrls.AtRiskPasswords });
-
-      await this.openPopup();
-    } finally {
-      // Reset the popup route to the default route so any subsequent
-      // popup openings will not open to the at-risk-passwords page.
-      await browserAction.setPopup({
-        popup: ExtensionPageUrls.Index,
-      });
-    }
-  }
-
   /**
-   * Opens the popup to the given page
-   *
-   * @default ExtensionPageUrls.Index
-   * @deprecated Migrating to the browser actions service.
+   * Opens the requested extension page. A null result means the toolbar popup was
+   * requested and its visibility still needs to be checked.
    */
-  async openTheExtensionToPage(url: ExtensionPageUrls = ExtensionPageUrls.Index) {
-    if (Object.values(ExtensionPageUrls).includes(url) && (await SidePanelMode.open(url))) {
-      return;
+  async openTheExtensionToPage(
+    url?: ExtensionPageUrls,
+    senderWindowId?: number,
+  ): Promise<boolean | null> {
+    if (url !== undefined && !Object.values(ExtensionPageUrls).includes(url)) {
+      return false;
     }
-    const isValidUrl = Object.values(ExtensionPageUrls).includes(url);
 
-    // If a non-defined URL is provided, return early.
-    if (!isValidUrl) {
-      return;
+    const navigated = await SidePanelMode.openAndConfirm(url, senderWindowId);
+    if (navigated !== null) {
+      return navigated;
+    }
+    if (url === undefined) {
+      await this.openToolbarPopup();
+      return null;
     }
 
     const browserAction = BrowserApi.getBrowserAction();
-
     try {
       // Set route of the popup before attempting to open it.
       // If the vault is locked, this won't have an effect as the auth guards will
       // redirect the user to the login page.
       await browserAction.setPopup({ popup: url });
 
-      await this.openPopup();
+      await this.openToolbarPopup();
+      return null;
     } finally {
       // Reset the popup route to the default route so any subsequent
       // popup openings will not open to the at-risk-passwords page.

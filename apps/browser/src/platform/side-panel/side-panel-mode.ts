@@ -11,6 +11,7 @@ const MESSAGE = "customSidePanel";
 const PORT = "customSidePanelView";
 const VIRTUAL_WINDOW_START = -1_000_000;
 const REQUEST_TIMEOUT = 120_000;
+const NAVIGATION_CONFIRMATION_TIMEOUT = 1_000;
 const PANEL_REGISTRATION_TIMEOUT = 5_000;
 const PANEL_DOCUMENT_KEY = "sidePanelDocument";
 const UNLOCK_REQUEST_KEY = "auth_unlockExtension";
@@ -23,7 +24,10 @@ type PanelRequest = {
   url: string;
   expires: number;
   documentId?: string;
+  confirmation?: Signal<boolean>;
 };
+
+type OpenResponse = { id: number; navigated?: boolean };
 
 type PanelConnection = {
   port: chrome.runtime.Port;
@@ -323,6 +327,26 @@ export class SidePanelMode {
     path = "popup/index.html",
     options: PanelOpenOptions = {},
   ): Promise<chrome.windows.Window | null> {
+    const request = await SidePanelMode.requestOpen(path, options);
+    return request
+      ? ({ id: request.id, type: "popup", focused: true } as chrome.windows.Window)
+      : null;
+  }
+
+  /** Returns null in popup mode and false if the panel has not accepted this navigation in time. */
+  static async openAndConfirm(
+    path = "popup/index.html",
+    senderWindowId?: number,
+  ): Promise<boolean | null> {
+    const request = await SidePanelMode.requestOpen(path, { senderWindowId }, true);
+    return request ? request.navigated === true : null;
+  }
+
+  private static async requestOpen(
+    path: string,
+    options: PanelOpenOptions,
+    confirmNavigation = false,
+  ): Promise<OpenResponse | null> {
     // Dispatch before storage/IPC awaits when the event already supplied the owning window.
     let opening = SidePanelMode.reveal(options.senderWindowId);
     await SidePanelMode.ready();
@@ -336,14 +360,19 @@ export class SidePanelMode {
       ...options,
       senderWindowId: options.senderWindowId ?? SidePanelMode.lastWindowId,
     };
-    const request = SidePanelMode.background
-      ? await SidePanelMode.enqueue(url, ownedOptions)
-      : await chrome.runtime.sendMessage({ [MESSAGE]: "open", url, options: ownedOptions });
+    const request: (OpenResponse & { error?: string }) | undefined = SidePanelMode.background
+      ? await SidePanelMode.queueOpen(url, ownedOptions, confirmNavigation)
+      : await chrome.runtime.sendMessage({
+          [MESSAGE]: "open",
+          url,
+          options: ownedOptions,
+          confirmNavigation,
+        });
     if (!request?.id || request.error) {
       throw new Error(request?.error ?? "No browser window is available for this request.");
     }
     await opening;
-    return { id: request.id, type: "popup", focused: true } as chrome.windows.Window;
+    return request;
   }
 
   static async closeKey(key: string, cancelled = false): Promise<boolean> {
@@ -545,9 +574,10 @@ export class SidePanelMode {
             if (!SidePanelMode.enabled) {
               throw new Error("Side panel mode is disabled.");
             }
-            return await SidePanelMode.enqueue(
+            return await SidePanelMode.queueOpen(
               SidePanelMode.panelUrl(message.url),
               message.options,
+              message.confirmNavigation === true,
             );
           case "close": {
             // A panel may only close the request currently delivered to its own document.
@@ -645,7 +675,36 @@ export class SidePanelMode {
     }
   }
 
-  private static async enqueue(url: string, options: PanelOpenOptions = {}): Promise<PanelRequest> {
+  private static async queueOpen(
+    url: string,
+    options: PanelOpenOptions,
+    confirmNavigation: boolean,
+  ): Promise<OpenResponse> {
+    if (!confirmNavigation) {
+      const request = await SidePanelMode.enqueue(url, options);
+      return { id: request.id };
+    }
+
+    const confirmation = signal<boolean>();
+    const request = await SidePanelMode.enqueue(
+      url,
+      { senderWindowId: options?.senderWindowId },
+      confirmation,
+    );
+    const timer = setTimeout(() => confirmation.resolve(false), NAVIGATION_CONFIRMATION_TIMEOUT);
+    try {
+      return { id: request.id, navigated: await confirmation.promise };
+    } finally {
+      clearTimeout(timer);
+      delete request.confirmation;
+    }
+  }
+
+  private static async enqueue(
+    url: string,
+    options: PanelOpenOptions = {},
+    confirmation?: Signal<boolean>,
+  ): Promise<PanelRequest> {
     const windowId =
       options.senderWindowId ??
       SidePanelMode.lastWindowId ??
@@ -669,6 +728,7 @@ export class SidePanelMode {
         key,
         url,
         expires: Date.now() + REQUEST_TIMEOUT,
+        confirmation,
       };
       SidePanelMode.requests.push(request);
     } else {
@@ -700,6 +760,7 @@ export class SidePanelMode {
     );
     SidePanelMode.requests = SidePanelMode.requests.filter((item) => !matches.includes(item));
     for (const item of matches) {
+      item.confirmation?.resolve(false);
       if (cancelled) {
         SidePanelMode.cancelledSubject.next(item.id);
       }
@@ -783,6 +844,7 @@ export class SidePanelMode {
           (item) => item.id === message.requestId && item.documentId === panel.documentId,
         );
         if (request?.key.startsWith("navigation_")) {
+          request.confirmation?.resolve(true);
           SidePanelMode.requests = SidePanelMode.requests.filter((item) => item !== request);
           SidePanelMode.deliver(panel.windowId);
           SidePanelMode.updatePendingBadge();

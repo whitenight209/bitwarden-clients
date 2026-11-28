@@ -8,6 +8,7 @@ type ContentMessageWindowData = {
   data?: string;
   remember?: boolean;
   url?: ExtensionPageUrls;
+  requestId?: number;
 };
 type ContentMessageWindowEventParams = {
   data: ContentMessageWindowData;

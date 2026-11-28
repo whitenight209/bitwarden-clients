@@ -39,6 +39,7 @@ const CHECK_FOR_EXTENSION_TIMEOUT_MS = 500;
 })
 export class WebBrowserInteractionService {
   destroyRef = inject(DestroyRef);
+  private openRequestId = 0;
 
   private messages$ = fromEvent<MessageEvent>(window, "message").pipe(
     takeUntilDestroyed(this.destroyRef),
@@ -65,10 +66,16 @@ export class WebBrowserInteractionService {
 
   /** Attempts to open the extension, rejects if the extension is not installed or it fails to open.  */
   openExtension = (url?: ExtensionPageUrls) => {
+    const requestId = ++this.openRequestId;
     return new Promise<void>((resolve, reject) => {
       race(
         this.messages$.pipe(
-          filter((event) => event.data.command === VaultMessages.PopupOpened),
+          filter(
+            (event) =>
+              event.data?.command === VaultMessages.PopupOpened &&
+              // Older extensions send an acknowledgement without a request ID.
+              (event.data.requestId === undefined || event.data.requestId === requestId),
+          ),
           map(() => true),
         ),
         timer(OPEN_RESPONSE_TIMEOUT_MS).pipe(map(() => false)),
@@ -82,7 +89,7 @@ export class WebBrowserInteractionService {
           resolve();
         });
 
-      window.postMessage({ command: VaultMessages.OpenBrowserExtensionToUrl, url });
+      window.postMessage({ command: VaultMessages.OpenBrowserExtensionToUrl, url, requestId });
     });
   };
 

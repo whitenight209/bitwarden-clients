@@ -71,7 +71,10 @@ async function closeUnlockPopout() {
  *
  * @param resultData - The result data from the SSO authentication.
  */
-async function openSsoAuthResultPopout(resultData: { code: string; state: string }) {
+async function openSsoAuthResultPopout(
+  resultData: { code: string; state: string },
+  senderWindowId?: number,
+) {
   const { code, state } = resultData;
   const authResultUrl = `popup/index.html#/sso?code=${encodeURIComponent(
     code,
@@ -79,6 +82,7 @@ async function openSsoAuthResultPopout(resultData: { code: string; state: string
 
   await BrowserPopupUtils.openPopout(authResultUrl, {
     singleActionKey: AuthPopoutType.ssoAuthResult,
+    senderWindowId,
   });
 }
 
@@ -95,10 +99,10 @@ async function closeSsoAuthResultPopout() {
  * @param twoFactorAuthWebAuthnData - The data to send ot the popout via query param.
  * It includes the WebAuthn response and whether to save the 2FA remember me token or not.
  */
-async function openTwoFactorAuthWebAuthnPopout(twoFactorAuthWebAuthnData: {
-  data: string;
-  remember: string;
-}) {
+async function openTwoFactorAuthWebAuthnPopout(
+  twoFactorAuthWebAuthnData: { data: string; remember: string },
+  senderWindowId?: number,
+) {
   const { data, remember } = twoFactorAuthWebAuthnData;
   const params =
     `webAuthnResponse=${encodeURIComponent(data)};` + `remember=${encodeURIComponent(remember)}`;
@@ -106,6 +110,7 @@ async function openTwoFactorAuthWebAuthnPopout(twoFactorAuthWebAuthnData: {
 
   await BrowserPopupUtils.openPopout(twoFactorUrl, {
     singleActionKey: AuthPopoutType.twoFactorAuthWebAuthn,
+    senderWindowId,
   });
 }
 

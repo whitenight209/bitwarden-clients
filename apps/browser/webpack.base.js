@@ -329,10 +329,6 @@ module.exports.buildConfig = function buildConfig(params) {
         __dirname,
         "src/vault/content/send-on-installed-message.ts",
       ),
-      "content/send-popup-open-message": path.resolve(
-        __dirname,
-        "src/vault/content/send-popup-open-message.ts",
-      ),
       ...params.additionalEntries,
     },
     cache:

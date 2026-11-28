@@ -585,6 +585,69 @@ test("navigation remains queued until its own panel accepts it after editing", a
   expect(mode.hasRequest("navigation_deferred")).toBe(false);
 });
 
+test("confirms a navigation only after its own window's panel accepts it", async () => {
+  await mode.setEnabled(true);
+  const contexts = await api.runtime.getContexts();
+  api.runtime.getContexts.mockResolvedValue([
+    ...contexts,
+    { contextType: "SIDE_PANEL", windowId: 8, tabId: -1, documentId: "second-panel" },
+  ]);
+  const attach = (documentId: string) => {
+    const port = {
+      name: "customSidePanelView",
+      sender: { ...sender, documentId },
+      onMessage: mockEvent(),
+      onDisconnect: mockEvent(),
+      postMessage: jest.fn(),
+      disconnect: jest.fn(),
+    };
+    api.runtime.onConnect.emit(port);
+    return port;
+  };
+
+  const first = attach(sender.documentId);
+  const settled = jest.fn();
+  const confirmation = mode.openAndConfirm("popup/index.html#/generator", 8).then(settled);
+  await jest.advanceTimersByTimeAsync(0);
+  const second = attach("second-panel");
+  await jest.advanceTimersByTimeAsync(0);
+  const [navigation] = second.postMessage.mock.calls.find(
+    ([message]) => message.type === "navigate",
+  )!;
+  const accepted = { type: "navigated", requestId: navigation.requestId, accepted: true };
+  first.onMessage.emit(accepted);
+  second.onMessage.emit({ ...accepted, accepted: false });
+  await jest.advanceTimersByTimeAsync(0);
+  expect(settled).not.toHaveBeenCalled();
+
+  second.onMessage.emit(accepted);
+  await confirmation;
+  expect(settled).toHaveBeenCalledWith(true);
+  expect(first.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "navigate" }));
+});
+
+test("leaves a timed-out confirmation queued for the toolbar", async () => {
+  await mode.setEnabled(true);
+  api.sidePanel.open.mockRejectedValueOnce(new Error("User gesture required") as never);
+  const confirmation = mode.openAndConfirm("popup/index.html#/generator", 7);
+  await jest.advanceTimersByTimeAsync(1_000);
+  await expect(confirmation).resolves.toBe(false);
+
+  const port = {
+    name: "customSidePanelView",
+    sender,
+    onMessage: mockEvent(),
+    onDisconnect: mockEvent(),
+    postMessage: jest.fn(),
+    disconnect: jest.fn(),
+  };
+  api.runtime.onConnect.emit(port);
+  await jest.advanceTimersByTimeAsync(0);
+  expect(port.postMessage).toHaveBeenLastCalledWith(
+    expect.objectContaining({ type: "navigate", url: expect.stringContaining("#/generator") }),
+  );
+});
+
 test("a repeated unlock request in the same window receives a new focus revision", async () => {
   await mode.setEnabled(true);
   const options = { senderWindowId: 7, singleActionKey: "auth_unlockExtension" };

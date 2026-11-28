@@ -1,4 +1,3 @@
-import { ExtensionPageUrls } from "@bitwarden/common/vault/enums";
 import { VaultMessages } from "@bitwarden/common/vault/enums/vault-messages.enum";
 
 import { EventSecurity } from "../utils/event-security";
@@ -20,9 +19,8 @@ const windowMessageHandlers: ContentMessageWindowEventHandlers = {
   [VaultMessages.checkBwInstalled]: ({ referrer }) => handleExtensionInstallCheck(referrer),
   duoResult: ({ data, referrer }: { data: any; referrer: string }) =>
     handleDuoResultMessage(data, referrer),
-  [VaultMessages.OpenAtRiskPasswords]: () => handleOpenAtRiskPasswordsMessage(),
-  [VaultMessages.OpenBrowserExtensionToUrl]: ({ data }) =>
-    handleOpenBrowserExtensionToUrlMessage(data),
+  [VaultMessages.OpenAtRiskPasswords]: ({ data }) => handleOpenExtensionMessage(data),
+  [VaultMessages.OpenBrowserExtensionToUrl]: ({ data }) => handleOpenExtensionMessage(data),
 };
 
 /**
@@ -83,13 +81,12 @@ function handleWebAuthnResultMessage(data: ContentMessageWindowData, referrer: s
   sendExtensionRuntimeMessage({ command, data: data.data, remember, referrer });
 }
 
-/** @deprecated use {@link handleOpenBrowserExtensionToUrlMessage} */
-function handleOpenAtRiskPasswordsMessage() {
-  sendExtensionRuntimeMessage({ command: VaultMessages.OpenAtRiskPasswords });
-}
-
-function handleOpenBrowserExtensionToUrlMessage({ url }: { url?: ExtensionPageUrls }) {
-  sendExtensionRuntimeMessage({ command: VaultMessages.OpenBrowserExtensionToUrl, url });
+function handleOpenExtensionMessage({ command, url, requestId }: ContentMessageWindowData) {
+  chrome.runtime.sendMessage({ command, url }, (response) => {
+    if (!chrome.runtime.lastError && response?.result === true) {
+      window.postMessage({ command: VaultMessages.PopupOpened, requestId });
+    }
+  });
 }
 
 /**

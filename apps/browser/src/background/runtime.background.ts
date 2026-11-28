@@ -16,7 +16,7 @@ import {
   isExternalMessage,
 } from "@bitwarden/common/platform/messaging";
 import { Utils } from "@bitwarden/common/platform/misc/utils";
-import { CipherType } from "@bitwarden/common/vault/enums";
+import { CipherType, ExtensionPageUrls } from "@bitwarden/common/vault/enums";
 import { VaultMessages } from "@bitwarden/common/vault/enums/vault-messages.enum";
 import { BiometricsCommands } from "@bitwarden/key-management";
 import { LockService, LockSource } from "@bitwarden/unlock";
@@ -127,6 +127,8 @@ export default class RuntimeBackground {
         "fillCipherForPopup",
         "getBitwardenAutofillAttributeSettings",
         VaultMessages.checkBwInstalled,
+        VaultMessages.OpenAtRiskPasswords,
+        VaultMessages.OpenBrowserExtensionToUrl,
         GET_CIPHER_LIST_VIEWS,
       ];
 
@@ -375,6 +377,10 @@ export default class RuntimeBackground {
           Utils.getHostname(sender.origin) || Utils.getHostname(sender.url) || msg.referrer;
         return await isValidVaultReferrer(this.environmentService, referrer);
       }
+      case VaultMessages.OpenAtRiskPasswords:
+        return await this.openFromVault(sender, ExtensionPageUrls.AtRiskPasswords);
+      case VaultMessages.OpenBrowserExtensionToUrl:
+        return await this.openFromVault(sender, msg.url);
       case "authResult": {
         if (!(await isValidVaultReferrer(this.environmentService, msg.referrer))) {
           return;
@@ -387,7 +393,7 @@ export default class RuntimeBackground {
           });
         } else {
           try {
-            await openSsoAuthResultPopout(msg);
+            await openSsoAuthResultPopout(msg, sender.tab?.windowId);
           } catch {
             this.logService.error("Unable to open sso popout tab");
           }
@@ -527,22 +533,14 @@ export default class RuntimeBackground {
         this.main.targetingRulesDataService.forceUpdate();
         break;
       case "openPopup":
-        await this.executeMessageActionOrOpenPopup(msg, this.openPopup.bind(this));
+        await this.executeMessageActionOrOpenPopup(msg, () => this.main.openPopup());
         break;
       case VaultMessages.OpenAtRiskPasswords: {
-        await this.executeMessageActionOrOpenPopup(
-          msg,
-          this.main.openAtRisksPasswordsPage.bind(this),
-        );
-        this.announcePopupOpen();
-        break;
-      }
-      case VaultMessages.OpenBrowserExtensionToUrl: {
-        await this.executeMessageActionOrOpenPopup(
-          msg,
-          this.main.openTheExtensionToPage.bind(this, msg.url),
-        );
-        this.announcePopupOpen();
+        if (!isExternalMessage(msg)) {
+          await this.executeMessageActionOrOpenPopup(msg, async () => {
+            await this.main.openTheExtensionToPage(ExtensionPageUrls.AtRiskPasswords);
+          });
+        }
         break;
       }
       case "bgUpdateContextMenu":
@@ -557,7 +555,7 @@ export default class RuntimeBackground {
           return;
         }
 
-        await openTwoFactorAuthWebAuthnPopout(msg);
+        await openTwoFactorAuthWebAuthnPopout(msg, getWebExtSender(msg)?.tab?.windowId);
         break;
       }
       case "reloadPopup":
@@ -608,13 +606,11 @@ export default class RuntimeBackground {
     message: Record<PropertyKey, unknown>,
     messageAction: () => Promise<void>,
   ): Promise<boolean> {
-    const hasAccounts = await firstValueFrom(
-      this.accountService.accounts$.pipe(map((a) => Object.keys(a).length > 0)),
-    );
+    const hasAccounts = await this.hasAccounts();
 
     // When there are no accounts associated with the extension, only allow opening the popup
     if (!hasAccounts) {
-      await this.openPopup();
+      await this.main.openPopup();
       return;
     }
 
@@ -629,6 +625,41 @@ export default class RuntimeBackground {
     }
 
     await messageAction();
+  }
+
+  private hasAccounts(): Promise<boolean> {
+    return firstValueFrom(
+      this.accountService.accounts$.pipe(map((accounts) => Object.keys(accounts).length > 0)),
+    );
+  }
+
+  private async openFromVault(
+    sender: chrome.runtime.MessageSender,
+    url: ExtensionPageUrls = ExtensionPageUrls.Index,
+  ): Promise<boolean> {
+    const hasAccounts = await this.hasAccounts();
+    if (
+      hasAccounts &&
+      !(await isValidVaultReferrer(this.environmentService, Utils.getHostname(sender.origin)))
+    ) {
+      return false;
+    }
+
+    const navigated = await this.main.openTheExtensionToPage(
+      hasAccounts ? url : undefined,
+      sender.tab?.windowId,
+    );
+    if (navigated !== null) {
+      return navigated;
+    }
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (await this.platformUtilsService.isPopupOpen()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async checkOnInstalled() {
@@ -669,15 +700,6 @@ export default class RuntimeBackground {
     return await BrowserApi.tabsQuery({ url: `${urlObj.href}*` });
   }
 
-  /**
-   * Opens the popup.
-   *
-   * @deprecated Migrating to the browser actions service.
-   */
-  private async openPopup() {
-    await this.main.openPopup();
-  }
-
   async sendBwInstalledMessageToVault() {
     try {
       const tabs = await this.getBwTabs();
@@ -695,31 +717,5 @@ export default class RuntimeBackground {
     } catch (e) {
       this.logService.error(`Error sending on installed message to vault: ${e}`);
     }
-  }
-
-  /** Sends a message to each tab that the popup was opened */
-  private announcePopupOpen() {
-    const announceToAllTabs = async () => {
-      const tabs = await this.getBwTabs();
-      for (const tab of tabs) {
-        await BrowserApi.executeScriptInTab(tab.id, {
-          file: "content/send-popup-open-message.js",
-          runAt: "document_end",
-        });
-      }
-    };
-
-    // Poll every 200ms (up to 1s) until the popup is open, to handle browser timing differences
-    let attempts = 0;
-    const interval = setInterval(async () => {
-      attempts++;
-      const isOpen = await this.platformUtilsService.isPopupOpen();
-      if (isOpen) {
-        clearInterval(interval);
-        await announceToAllTabs();
-      } else if (attempts >= 5) {
-        clearInterval(interval);
-      }
-    }, 200);
   }
 }
