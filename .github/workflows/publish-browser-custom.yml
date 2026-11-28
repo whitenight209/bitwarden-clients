@@ -22,6 +22,12 @@ on:
         required: false
         type: string
 
+      publish:
+        description: 'Publish a GitHub Release after CI succeeds'
+        required: false
+        default: true
+        type: boolean
+
 permissions:
   contents: read
 
@@ -121,7 +127,7 @@ jobs:
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## Install the extension
-          Download **chrome-extension-$RELEASE_VERSION** from this run's Artifacts, or open the [GitHub Release](https://github.com/$GITHUB_REPOSITORY/releases/tag/browser-custom-v$RELEASE_VERSION).
+          Download **chrome-extension-$RELEASE_VERSION** from this run's Artifacts.
           1. Extract the artifact, then extract **extension-chrome-custom-$RELEASE_VERSION.zip** to a permanent folder.
           2. Open **chrome://extensions** and enable **Developer mode**.
           3. Click **Load unpacked** and select the folder containing **manifest.json**.
@@ -132,6 +138,9 @@ jobs:
           EOF
 
   publish:
+    if: >-
+      ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) ||
+          (github.event_name == 'push' && !contains(github.event.head_commit.message, '[ci-only]')) }}
     needs: build
     runs-on: ubuntu-22.04
     timeout-minutes: 10
