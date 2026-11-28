@@ -379,8 +379,34 @@ export async function testPasskeyPanel({
   async function approveAfterVaultLock(panelState) {
     await closePanel();
     background = await lockVault();
+    setPhase(`passkey-${panelState}-panel-locked-integration-ready`);
+    await poll(
+      () =>
+        background.evaluate(async () => {
+          const scriptIds = (await chrome.scripting.getRegisteredContentScripts()).map(
+            (script) => script.id,
+          );
+          return (
+            scriptIds.includes("fido2-page-script-registration") &&
+            scriptIds.includes("fido2-content-script-registration")
+          );
+        }),
+      Boolean,
+      "Passkey content scripts registered after extension reload",
+      20_000,
+    );
     // The account lock reloads the extension, so reload the RP to install fresh content scripts.
     await website.reload();
+    await poll(
+      () =>
+        website.evaluate(
+          () =>
+            !Function.prototype.toString.call(navigator.credentials.get).includes("[native code]"),
+        ),
+      Boolean,
+      "RP has the reloaded extension's WebAuthn handler",
+      20_000,
+    );
     if (panelState === "open") {
       const extension = (await browser.extensions()).get(extensionId);
       assert.ok(extension, "The extension is unavailable after locking the vault");
