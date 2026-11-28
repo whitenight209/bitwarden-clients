@@ -9,6 +9,12 @@ on:
     paths:
       - 'apps/browser/**'
       - 'libs/**'
+      - 'bitwarden_license/bit-common/**'
+      - 'bitwarden_license/bit-pam/**'
+      - 'bitwarden_license/bit-pam-components/**'
+      - '.npmrc'
+      - 'babel.config.json'
+      - 'tailwind.config.js'
       - 'e2e/infra/chrome/**'
       - 'package.json'
       - 'package-lock.json'
@@ -18,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Optional numeric version; leave empty to choose the next version automatically'
+        description: 'Optional numeric version for a new release'
         required: false
         type: string
 
@@ -45,6 +51,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       version: ${{ steps.version.outputs.version }}
+      changed: ${{ steps.version.outputs.changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,34 +68,31 @@ jobs:
         run: |
           mkdir -p .debug
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > .debug/custom-previous-releases.json
-          node --experimental-strip-types --input-type=module <<'JS'
-          import { appendFileSync, readFileSync } from 'node:fs';
-          import { nextReleaseVersion, versionParts } from './apps/browser/src/platform/updates/update-contract.ts';
-          const prefix = 'browser-custom-v';
-          const published = JSON.parse(readFileSync('.debug/custom-previous-releases.json', 'utf8')).flat()
-            .filter(entry => entry.tag_name?.startsWith(prefix))
-            .map(entry => entry.tag_name.slice(prefix.length));
-          const manifest = JSON.parse(readFileSync('apps/browser/src/manifest.v3.json', 'utf8'));
-          const version = process.env.INPUT_VERSION || (process.env.GITHUB_REF_TYPE === 'tag'
-            ? process.env.GITHUB_REF_NAME.slice(prefix.length)
-            : nextReleaseVersion(manifest.version, published));
-          versionParts(version);
-          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Building Chrome extension **${version}**.\n`);
-          JS
+          node --experimental-strip-types apps/browser/scripts/resolve-custom-release.mjs .debug/custom-previous-releases.json
       - run: npm ci
       - name: Test update packaging
         run: node --experimental-strip-types --test apps/browser/scripts/custom-update-package.test.mjs
       - name: Test all browser extension features
         run: npm exec --workspace @bitwarden/browser -- jest --maxWorkers=2
       - name: Download and verify previous custom release
+        if: steps.version.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: node --experimental-strip-types apps/browser/scripts/verify-custom-update.mjs prepare --version "$RELEASE_VERSION" --out .debug/custom-baseline
+      - name: Reuse the verified published extension
+        if: steps.version.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node --experimental-strip-types apps/browser/scripts/verify-custom-update.mjs prepare --reuse-current --version "$RELEASE_VERSION" --out .debug/custom-current
+          mv .debug/custom-current/build apps/browser/build
       - name: Build Chrome extension
+        if: steps.version.outputs.changed == 'true'
         run: npm run build:prod:chrome --workspace @bitwarden/browser
       - name: Package full and incremental updates
+        if: steps.version.outputs.changed == 'true'
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -114,6 +118,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Upload verified release assets
+        if: steps.version.outputs.changed == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: chrome-extension-${{ steps.version.outputs.version }}
@@ -122,6 +127,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Add download and installation instructions
+        if: steps.version.outputs.changed == 'true'
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -139,8 +145,8 @@ jobs:
 
   publish:
     if: >-
-      ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) ||
-          (github.event_name == 'push' && !contains(github.event.head_commit.message, '[ci-only]')) }}
+      ${{ needs.build.outputs.changed == 'true' &&
+          (github.event_name == 'push' || inputs.publish) }}
     needs: build
     runs-on: ubuntu-22.04
     timeout-minutes: 10

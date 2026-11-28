@@ -124,8 +124,14 @@ export async function verifyReleaseDirectory({ releaseDir, config, baseDir, extr
   return release;
 }
 
-/** Downloads only a verified, older release of this exact product as the patch baseline. */
-export async function preparePreviousRelease({ config, version, directory, token }) {
+/** Downloads a verified patch baseline or reuses the exact published version for CI. */
+export async function preparePreviousRelease({
+  config,
+  version,
+  directory,
+  token,
+  reuseCurrent = false,
+}) {
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const releases = [];
   for (let page = 1; page <= 10; page++) {
@@ -143,10 +149,13 @@ export async function preparePreviousRelease({ config, version, directory, token
     for (const entry of entries) {
       if (!entry.draft && !entry.prerelease && entry.tag_name?.startsWith(config.tagPrefix)) {
         const candidate = entry.tag_name.slice(config.tagPrefix.length);
-        if (compareVersions(candidate, version) >= 0) {
+        const comparison = compareVersions(candidate, version);
+        if (comparison > 0 || (comparison === 0 && !reuseCurrent)) {
           throw new Error("A release with this version or a newer version is already published.");
         }
-        releases.push({ ...entry, version: candidate });
+        if (!reuseCurrent || candidate === version) {
+          releases.push({ ...entry, version: candidate });
+        }
       }
     }
     if (entries.length < 100) {
@@ -156,6 +165,9 @@ export async function preparePreviousRelease({ config, version, directory, token
   releases.sort((a, b) => compareVersions(b.version, a.version));
   const previous = releases[0];
   if (!previous) {
+    if (reuseCurrent) {
+      throw new Error("The selected published release was not found.");
+    }
     return false;
   }
   const assetDir = join(directory, "assets");
@@ -217,10 +229,9 @@ async function main() {
       version: arg("--version"),
       directory: resolve(arg("--out")),
       token: process.env.GH_TOKEN,
+      reuseCurrent: args.includes("--reuse-current"),
     });
-    console.log(
-      found ? "Verified previous release downloaded." : "First release: no delta baseline.",
-    );
+    console.log(found ? "Verified release downloaded." : "First release: no delta baseline.");
   } else if (command === "verify") {
     const config = JSON.parse(await readFile(resolve(arg("--config")), "utf8"));
     const release = await verifyReleaseDirectory({
@@ -231,7 +242,7 @@ async function main() {
     console.log(`Verified ${release.releaseTag}.`);
   } else {
     throw new Error(
-      "Usage: verify-custom-update.mjs prepare --version VERSION --out DIR | verify --release DIR --config FILE [--base DIR]",
+      "Usage: verify-custom-update.mjs prepare --version VERSION --out DIR [--reuse-current] | verify --release DIR --config FILE [--base DIR]",
     );
   }
 }

@@ -57,9 +57,9 @@ write는 새 파일과 해시·크기가 바뀐 파일, delete는 이전 목록�
 
 ## CI/CD 설정
 
-[Chrome Extension Release](../.github/workflows/publish-browser-custom.yml)는 이 저장소의 유일한 GitHub Actions 워크플로다. 기존 브라우저·웹·데스크톱·CLI 빌드와 테스트·번역·봇 워크플로는 제거했다. 브라우저 전체 단위 테스트와 업데이트 패키징 테스트는 이 릴리스 CI 안에서 실행한다.
+[Chrome Extension Release](../.github/workflows/publish-browser-custom.yml)에서 브라우저 전체 단위 테스트, 업데이트 패키징 테스트, Chrome 사이드 패널 E2E를 실행한다.
 
-main의 확장 관련 변경 push, browser-custom-v* 태그 push 또는 수동 실행으로 시작한다. main push와 버전 입력을 비운 수동 실행에서는 소스 버전과 이미 사용한 릴리스 버전보다 높은 숫자 버전을 자동 선택한다.
+`main`의 확장 관련 변경 push, `browser-custom-v*` 태그 push 또는 수동 실행으로 시작한다. 최신 공개 릴리스 태그와 확장 소스, 공용 라이브러리, 의존성 및 빌드 설정을 비교한다. 변경이 있으면 더 높은 버전으로 빌드하고 검증 성공 후 GitHub Release를 게시한다. 문서·테스트·워크플로만 바뀌면 기존 버전을 유지하고 검증된 공개 ZIP으로 E2E를 실행한다.
 
 **업데이트용 Secret이나 키 등록은 필요 없다.** 기본 github.token으로 릴리스 읽기·게시를 수행한다. 빌드 job은 읽기, 게시 job은 contents: write를 사용한다. 같은 채널의 워크플로는 직렬화하며 같거나 높은 공개 버전이 있으면 배포를 거부한다.
 

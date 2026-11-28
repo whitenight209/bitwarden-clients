@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { packageUpdate } from "./package-custom-update.mjs";
-import { unzip, verifyReleaseDirectory } from "./verify-custom-update.mjs";
+import {
+  hasReleaseChanges,
+  latestPublishedVersion,
+  releaseDecision,
+} from "./resolve-custom-release.mjs";
+import { preparePreviousRelease, unzip, verifyReleaseDirectory } from "./verify-custom-update.mjs";
 
 async function fixture(t, version = "2026.11.0.1") {
   const root = await mkdtemp(join(tmpdir(), "custom-update-package-"));
@@ -179,4 +185,88 @@ test("preserves an existing manifest identity without key configuration", async 
   await packageUpdate({ ...target, baseDir: base.buildDir });
   const next = JSON.parse(await readFile(join(target.buildDir, "manifest.json")));
   assert.equal(next.key, manifest.key);
+});
+
+test("release inputs exclude docs, workflows, and tests but detect production changes", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "custom-release-inputs-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const git = (...args) =>
+    execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], {
+      cwd,
+      encoding: "utf8",
+    }).trim();
+  git("init", "--quiet");
+  git("commit", "--quiet", "--allow-empty", "-m", "Published release");
+  const published = git("rev-parse", "HEAD");
+
+  for (const path of ["apps/browser/src", ".github/workflows", "e2e"]) {
+    await mkdir(join(cwd, path), { recursive: true });
+  }
+  for (const path of [
+    "apps/browser/src/README.md",
+    "apps/browser/src/background.spec.ts",
+    ".github/workflows/release.yml",
+    "e2e/browser.ts",
+  ]) {
+    await writeFile(join(cwd, path), "change");
+  }
+  git("add", ".");
+  git("commit", "--quiet", "-m", "CI and documentation");
+  assert.equal(hasReleaseChanges(published, cwd), false);
+
+  await writeFile(join(cwd, "apps/browser/src/background.ts"), "change");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "Production code");
+  assert.equal(hasReleaseChanges(published, cwd), true);
+});
+
+test("release versions stay fixed for identical inputs and increase for changed inputs", () => {
+  const publishedVersion = latestPublishedVersion([
+    { tag_name: "browser-custom-v2026.11.0.10" },
+    { tag_name: "browser-custom-v2026.11.0.9" },
+    { tag_name: "browser-custom-v2026.11.0.11", draft: true },
+    { tag_name: "browser-custom-v2026.11.0.12", prerelease: true },
+    { tag_name: "browser-custom-vinvalid" },
+    { tag_name: "desktop-v2027.1.0" },
+  ]);
+  const options = { manifestVersion: "2026.11.0", publishedVersion };
+  assert.deepEqual(releaseDecision({ ...options, changed: false, requested: "2027.1.0" }), {
+    version: "2026.11.0.10",
+    changed: false,
+  });
+  assert.deepEqual(releaseDecision({ ...options, changed: true }), {
+    version: "2026.11.0.11",
+    changed: true,
+  });
+  assert.throws(() => releaseDecision({ ...options, changed: true, requested: publishedVersion }));
+  assert.equal(
+    releaseDecision({ manifestVersion: "2026.11.0", changed: true }).version,
+    "2026.11.0.1",
+  );
+});
+
+test("CI can reuse an exact published package without allowing it as a new release baseline", async (t) => {
+  const options = await fixture(t);
+  const result = await packageUpdate(options);
+  const published = {
+    tag_name: result.release.releaseTag,
+    assets: ["update-release.json", result.release.inventory.name, result.release.full.name].map(
+      (name) => ({ name, url: "https://example.test/" + name }),
+    ),
+  };
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (url.startsWith("https://api.github.com/")) {
+      return Response.json([published]);
+    }
+    return new Response(await readFile(join(options.outDir, new URL(url).pathname.slice(1))));
+  });
+  const settings = {
+    config: result.config,
+    directory: join(options.root, "published"),
+    version: options.version,
+  };
+  await assert.rejects(preparePreviousRelease(settings), /already published/);
+  assert.equal(await preparePreviousRelease({ ...settings, reuseCurrent: true }), true);
+  const manifest = JSON.parse(await readFile(join(settings.directory, "build", "manifest.json")));
+  assert.equal(manifest.version, options.version);
 });
